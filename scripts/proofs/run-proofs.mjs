@@ -1,5 +1,7 @@
 // Side-by-side proofs: the packaged Electron app against an installed-style Chrome window.
-// Usage: node scripts/proofs/run-proofs.mjs electron|chrome [--stream]
+// Usage: node scripts/proofs/run-proofs.mjs electron|chrome
+// Popup blocking, background throttling and Cloudflare rows live in clean-proofs.mjs, because
+// Playwright's own launch switches would falsify them.
 // Signs in as the synthetic member account from BENCH_EMAIL / BENCH_PASSWORD. Credentials are
 // read from the environment and never printed. Nothing here sends OS-level keys or clicks.
 import { _electron, chromium } from 'playwright'
@@ -8,7 +10,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const target = process.argv[2]
-const stream = process.argv.includes('--stream')
 if (target !== 'electron' && target !== 'chrome') throw new Error('target must be electron or chrome')
 
 const BASE = 'https://uctintelligence.com'
@@ -23,13 +24,18 @@ const log = (s) => console.log(s)
 
 function rec(row, verdict, detail) {
   results[row] = { verdict, detail }
+  writeFileSync(join(OUT, `results-${target}.json`), JSON.stringify(results, null, 2))
   log(`[${verdict}] ${row} ${JSON.stringify(detail).slice(0, 400)}`)
 }
+
+let lastPopup = null
 
 async function row(name, fn) {
   try {
     await fn()
   } catch (e) {
+    // A row that fails with a board popped must not strand the synthetic account's layout.
+    if (lastPopup && !lastPopup.isClosed()) await lastPopup.close().catch(() => undefined)
     rec(name, 'INCONCLUSIVE', { error: `${e.name}: ${String(e.message).split('\n')[0].slice(0, 160)}` })
   }
 }
@@ -141,19 +147,7 @@ await row('P1 portals', async () => {
   rec('P1 portals', ok ? 'PASS' : 'FAIL', r)
 })
 
-await row('P2 launch restore', async () => {
-  await sleep(6500) // lets any earlier user activation expire
-  const r = await page.evaluate(() => {
-    const open = []
-    for (let i = 0; i < 6; i++) open.push(window.open('', `proof-p2-${i}`, `width=320,height=240,left=${40 * i},top=${40 * i}`))
-    const n = open.filter(Boolean).length
-    open.forEach((w) => w && w.close())
-    return n
-  })
-  rec('P2 launch restore', r === 6 ? 'PASS' : 'FAIL', { opened: r, of: 6 })
-})
-
-await row('Placement', async () => {
+async function placement(name) {
   let displays
   if (target === 'electron') {
     displays = await app.evaluate(({ screen }) =>
@@ -185,57 +179,19 @@ await row('Placement', async () => {
   }
   const bad = rows.filter((r) => r.off === null || r.off > 8)
   const scales = [...new Set(rows.map((r) => r.scale))]
-  rec('Placement', bad.length === 0 ? (scales.length > 1 ? 'PASS' : 'PASS (one DPI only)') : 'FAIL', { displays: rows.length, scales, wrong: bad })
-})
+  rec(name, bad.length === 0 ? (scales.length > 1 ? 'PASS' : 'PASS (one DPI only)') : 'FAIL', { displays: rows.length, scales, wrong: bad })
+}
 
-await row('P4 background (after hours)', async () => {
-  await openChildWithGesture('proof-p4', 'width=500,height=360,left=200,top=200')
-  const start = () => page.evaluate(() => {
-    const w = window.__child
-    window.__c = { raf: 0, tick: 0, hidden: null, childHidden: null }
-    w.__on = true
-    const loop = () => { if (w.__on) { window.__c.raf++; w.requestAnimationFrame(loop) } }
-    w.requestAnimationFrame(loop)
-    window.__t = setInterval(() => { window.__c.tick++ }, 100)
+await row('Placement', () => placement('Placement'))
+if (target === 'chrome') {
+  await row('Placement with permission', async () => {
+    const cdp = await context.newCDPSession(page)
+    await cdp.send('Browser.grantPermissions', { origin: BASE, permissions: ['windowManagement'] })
+    const screens = await page.evaluate(async () => (await window.getScreenDetails()).screens.length)
+    log(`window-management granted, screens seen ${screens}`)
+    await placement('Placement with permission')
   })
-  const stop = () => page.evaluate(() => {
-    clearInterval(window.__t)
-    window.__child.__on = false
-    window.__c.hidden = document.hidden
-    window.__c.childHidden = window.__child.document.hidden
-    return window.__c
-  })
-  await start()
-  await sleep(10000)
-  const visible = await stop()
-  let cdp
-  if (target === 'electron') {
-    await app.evaluate(({ BrowserWindow }) => {
-      const main = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().startsWith('https://'))
-      main.minimize()
-    })
-  } else {
-    cdp = await context.newCDPSession(page)
-    const { windowId } = await cdp.send('Browser.getWindowForTarget')
-    await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'minimized' } })
-  }
-  await sleep(2000)
-  await start()
-  await sleep(10000)
-  const minimized = await stop()
-  if (target === 'electron') {
-    await app.evaluate(({ BrowserWindow }) => {
-      const main = BrowserWindow.getAllWindows().find((w) => w.webContents.getURL().startsWith('https://'))
-      main.restore()
-    })
-  } else {
-    const { windowId } = await cdp.send('Browser.getWindowForTarget')
-    await cdp.send('Browser.setWindowBounds', { windowId, bounds: { windowState: 'normal' } })
-  }
-  await page.evaluate(() => window.__child.close())
-  const healthy = minimized.raf >= visible.raf * 0.5 && minimized.tick >= 80
-  rec('P4 background (after hours)', healthy ? 'PASS' : 'FAIL', { visible, minimized, note: 'market-open CPU row not run' })
-})
+}
 
 await row('P7 subset', async () => {
   const r = await page.evaluate(async () => {
@@ -283,21 +239,28 @@ await row('P18 server load per client', async () => {
   rec('P18 server load per client', 'MEASURED', { apiResponsesPerMinute: api / 2, page: '/charts idle' })
 })
 
+// Pops the whole board. Attached first so a failed click cannot leave a rejection unhandled.
+async function popBoard() {
+  const popup = page.waitForEvent('popup', { timeout: 20000 })
+  popup.catch(() => undefined)
+  await page.locator(MENU).first().click()
+  await page.locator(BOARD).first().click({ timeout: 10000 })
+  lastPopup = await popup
+  return lastPopup
+}
+
 await row('P20 route change', async () => {
   if (base === 0) throw new Error('synthetic board is empty')
-  const popup = page.waitForEvent('popup', { timeout: 20000 })
-  await page.locator(MENU).first.click()
-  await page.locator(BOARD).first.click({ timeout: 10000 })
-  const w = await popup
+  const w = await popBoard()
   await sleep(3000)
   let alive = true
   for (const r of ['/options-flow', '/journal', '/settings', '/dashboard', '/breadth']) {
-    await page.locator(`a[href="${r}"]`).first.click({ timeout: 15000 })
+    await page.locator(`a[href="${r}"]`).first().click({ timeout: 15000 })
     await page.waitForURL(`**${r}*`, { timeout: 15000 })
     await sleep(1500)
     if (w.isClosed()) { alive = false; break }
   }
-  await page.locator('a[href="/charts"]').first.click({ timeout: 15000 })
+  await page.locator('a[href="/charts"]').first().click({ timeout: 15000 })
   await page.waitForSelector(MENU, { timeout: 45000 })
   await sleep(3000)
   const stillOpen = !w.isClosed()
@@ -307,46 +270,9 @@ await row('P20 route change', async () => {
   rec('P20 route change', alive && stillOpen && back === base ? 'PASS' : 'FAIL', { alive, stillOpen, back, base })
 })
 
-await row('P6 Cloudflare and auth', async () => {
-  const alerts = await page.evaluate(async () => {
-    const r = await fetch('/api/alerts', { credentials: 'include' })
-    const type = r.headers.get('content-type') || ''
-    return { status: r.status, json: type.includes('json') }
-  })
-  const r = await page.evaluate(async () => {
-    const tally = {}
-    let cf = 0
-    for (let i = 0; i < 500; i++) {
-      const x = await fetch('/api/auth/me', { credentials: 'include' })
-      tally[x.status] = (tally[x.status] || 0) + 1
-      if (x.headers.get('cf-mitigated')) cf++
-      await new Promise((d) => setTimeout(d, 250))
-    }
-    return { tally, cf }
-  })
-  const ua = await page.evaluate(() => navigator.userAgent)
-  log(`user agent: ${ua}`)
-  const ok = alerts.status === 200 && alerts.json && r.cf === 0 && !r.tally[403]
-  rec('P6 500 calls', ok ? 'PASS' : 'FAIL', { alerts, ...r })
-})
-
-if (stream) {
-  await row('P6 30-minute stream', async () => {
-    const from = Date.now()
-    await charts()
-    await sleep(30 * 60 * 1000)
-    const during = seen.filter((x) => x.t >= from)
-    const blocked = during.filter((x) => x.cf || x.s === 403).length
-    rec('P6 30-minute stream', blocked === 0 ? 'PASS' : 'FAIL', { responses: during.length, blocked })
-  })
-}
-
 if (target === 'electron') {
   await row('Quit order', async () => {
-    const popup = page.waitForEvent('popup', { timeout: 20000 })
-    await page.locator(MENU).first.click()
-    await page.locator(BOARD).first.click({ timeout: 10000 })
-    const w = await popup
+    const w = await popBoard()
     await sleep(3000)
     const eventsFile = join(profile, 'quit-events.json')
     await app.evaluate(({ app: a, BrowserWindow }, file) => {
@@ -396,7 +322,7 @@ if (target === 'electron') {
     const restore = page.getByRole('button', { name: 'Restore', exact: true })
     const offered = await restore.count()
     if (offered) {
-      await restore.first.click()
+      await restore.first().click()
       await sleep(6000)
     }
     const back = await page.locator(POP).count()
