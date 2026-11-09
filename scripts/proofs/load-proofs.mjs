@@ -24,6 +24,7 @@ const SYMBOLS = ['NVDA', 'AAPL', 'MSFT', 'AMZN', 'META', 'GOOGL', 'TSLA', 'AMD',
 const WIDTH = 480
 const HEIGHT = 360
 const COLUMNS = 4
+const MIN_FRAMES = 30
 
 mkdirSync(OUT, { recursive: true })
 const results = { target, startedUtc: new Date().toISOString(), dry, steps: [] }
@@ -82,7 +83,7 @@ const START = `(()=>{const m=window.__m={frames:[],long:0,longMs:0,last:performa
   window.__o.observe({entryTypes:['longtask']});
   const f=t=>{if(!m.on)return;m.frames.push(t-m.last);m.last=t;requestAnimationFrame(f)};requestAnimationFrame(f);return true})()`
 const STOP = `(()=>{const m=window.__m;m.on=false;window.__o.disconnect();const s=[...m.frames].sort((a,b)=>a-b);
-  return {frames:s.length,p95:Math.round(s[Math.floor(s.length*0.95)]||0),longTasks:m.long,longMs:Math.round(m.longMs),
+  return {frames:s.length,p95:s.length>=${MIN_FRAMES}?Math.round(s[Math.floor(s.length*0.95)]):null,longTasks:m.long,longMs:Math.round(m.longMs),
   canvases:document.querySelectorAll('canvas').length,hidden:document.hidden}})()`
 
 async function evalIn(session, expression) {
@@ -107,6 +108,7 @@ let app
 try {
   const display = JSON.parse(readFileSync(join(OUT, 'displays.json'), 'utf8'))[displayIndex]
   if (!display) throw new Error(`no display ${displayIndex}`)
+  if (display.w < COLUMNS * WIDTH || display.h < Math.ceil(12 / COLUMNS) * HEIGHT) throw new Error('chart windows do not fit that display')
   app = await startApp(target, PORT)
   const { child, c, run, charts } = app
   await charts()
@@ -141,11 +143,13 @@ try {
     const windows = []
     for (const s of sessions) windows.push(await evalIn(s, STOP))
     const opener = await evalIn(c, STOP)
-    const p95s = windows.map((w) => w.p95).sort((a, b) => a - b)
+    const p95s = windows.map((w) => w.p95).filter((p) => p !== null).sort((a, b) => a - b)
     const step = {
       charts: count,
       usage: usage(before, after, elapsed),
       rendered: windows.filter((w) => w.canvases > 0).length,
+      painting: p95s.length,
+      valid: p95s.length === count && windows.every((w) => w.canvases > 0),
       worstP95Ms: p95s[p95s.length - 1],
       medianP95Ms: p95s[Math.floor(p95s.length / 2)],
       longTasks: windows.reduce((a, w) => a + w.longTasks, 0),

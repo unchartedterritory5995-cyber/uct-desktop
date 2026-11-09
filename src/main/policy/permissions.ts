@@ -1,5 +1,5 @@
-// The proof build grants exactly two things, to the exact app origin: audio, and notifications
-// from the main window only, so a popped-out page cannot notify a second time.
+// Granted only to the exact app origin: audio, full screen for video, writing to the clipboard for
+// the site's Copy buttons, and notifications from the main window only, so nothing notifies twice.
 
 export interface PermissionAsk {
   permission: string
@@ -20,6 +20,7 @@ function originOf(url: string): string | null {
 export function isPermissionAllowed(ask: PermissionAsk, appOrigin: string): boolean {
   if (originOf(ask.origin) !== appOrigin) return false
   if (ask.permission === 'notifications') return ask.fromMainWindow === true
+  if (ask.permission === 'clipboard-sanitized-write' || ask.permission === 'fullscreen') return true
   if (ask.permission === 'media') {
     return ask.mediaTypes !== undefined && ask.mediaTypes.length > 0 && ask.mediaTypes.every((t) => t === 'audio')
   }

@@ -15,6 +15,7 @@ if (target !== 'electron' && target !== 'chrome') throw new Error('target must b
 const OUT = 'proof-output'
 const PORT = target === 'electron' ? 9333 : 9334
 const STREAM_MS = 30 * 60 * 1000
+const STREAM_ALIVE_MS = 2 * 60 * 1000
 const SWITCHES_ABSENT = ['--disable-popup-blocking', '--disable-background-timer-throttling', '--disable-renderer-backgrounding']
 
 mkdirSync(OUT, { recursive: true })
@@ -102,7 +103,7 @@ try {
   await row('P6 500 calls', async () => {
     const alerts = await run(`fetch('/api/alerts',{credentials:'include'}).then(r=>({status:r.status,json:(r.headers.get('content-type')||'').includes('json')}))`)
     const r = await run(`(async()=>{const tally={};let cf=0;for(let i=0;i<500;i++){const x=await fetch('/api/auth/me',{credentials:'include'});tally[x.status]=(tally[x.status]||0)+1;if(x.headers.get('cf-mitigated'))cf++;await new Promise(d=>setTimeout(d,250))}return {tally,cf}})()`)
-    const ok = alerts.status === 200 && alerts.json && r.cf === 0 && !r.tally[403]
+    const ok = alerts.status === 200 && alerts.json && r.cf === 0 && r.tally[200] === 500
     rec('P6 500 calls', ok ? 'PASS' : 'FAIL', { alerts, ...r })
   })
 
@@ -113,8 +114,10 @@ try {
       await sleep(STREAM_MS)
       const during = seen.filter((x) => x.t >= from)
       const blocked = during.filter((x) => x.cf || x.s === 403).length
+      const lastResponse = during.length ? during[during.length - 1].t : 0
+      const aliveAtEnd = Date.now() - lastResponse < STREAM_ALIVE_MS
       const me = await run(`fetch('/api/auth/me',{credentials:'include'}).then(r=>r.status)`)
-      rec('P6 30-minute stream', blocked === 0 && me === 200 ? 'PASS' : 'FAIL', { minutes: 30, responses: during.length, blocked, authAtEnd: me })
+      rec('P6 30-minute stream', blocked === 0 && me === 200 && aliveAtEnd ? 'PASS' : 'FAIL', { minutes: 30, responses: during.length, blocked, aliveAtEnd, authAtEnd: me })
     })
   }
 } catch (e) {

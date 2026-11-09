@@ -12,6 +12,13 @@ export const BASE = 'https://uctintelligence.com'
 export const MENU = '[data-guide="workspace.layoutsMenuBtn"]'
 export const CHILD_TITLE = 'proof-child'
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const COMMAND_TIMEOUT_MS = 300000
+
+// A leftover app on this port would answer in place of the one this run starts.
+async function refuseBusyPort(port) {
+  const answered = await fetch(`http://127.0.0.1:${port}/json/version`).then(() => true, () => false)
+  if (answered) throw new Error(`port ${port} is already in use`)
+}
 
 export function connect(url) {
   return new Promise((ok, no) => {
@@ -29,12 +36,25 @@ export function connect(url) {
       } else listeners.forEach((l) => l(m))
     }
     ws.onerror = () => no(new Error('debug socket failed'))
+    ws.onclose = () => {
+      for (const p of pending.values()) p.no(new Error('debug socket closed'))
+      pending.clear()
+    }
     ws.onopen = () =>
       ok({
         send: (method, params = {}) =>
           new Promise((res, rej) => {
-            pending.set(++id, { ok: res, no: rej })
-            ws.send(JSON.stringify({ id, method, params }))
+            const callId = ++id
+            const timer = setTimeout(() => {
+              pending.delete(callId)
+              rej(new Error(`${method} timed out`))
+            }, COMMAND_TIMEOUT_MS)
+            const settle = (fn) => (v) => {
+              clearTimeout(timer)
+              fn(v)
+            }
+            pending.set(callId, { ok: settle(res), no: settle(rej) })
+            ws.send(JSON.stringify({ id: callId, method, params }))
           }),
         on: (l) => listeners.push(l),
       })
@@ -42,6 +62,7 @@ export function connect(url) {
 }
 
 export async function startApp(target, port) {
+  await refuseBusyPort(port)
   const profile = mkdtempSync(join(tmpdir(), `uct-clean-${target}-`))
   const exe =
     target === 'electron'
@@ -67,6 +88,7 @@ public static class W {
   [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
   [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
   [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
 }
 '@
 $hits = New-Object System.Collections.ArrayList
@@ -78,7 +100,9 @@ $hits = New-Object System.Collections.ArrayList
   }
   $true }, [IntPtr]::Zero) | Out-Null
 foreach ($h in $hits) { [void][W]::ShowWindow($h, ${command}) }
-$hits.Count`
+Start-Sleep -Milliseconds 400
+$wantIconic = ${command === 6 ? '$true' : '$false'}
+@($hits | Where-Object { [W]::IsIconic($_) -eq $wantIconic }).Count`
     return Number(execFileSync('powershell.exe', ['-NoProfile', '-Command', script], { encoding: 'utf8' }).trim())
   }
 
@@ -95,41 +119,49 @@ $hits.Count`
     throw new Error('app page did not appear')
   }
 
-  const pageTarget = await findPage()
-  const c = await connect(pageTarget.webSocketDebuggerUrl)
-  await c.send('Runtime.enable')
-  await c.send('Page.enable')
-  await c.send('Network.enable')
-
-  const run = async (expression, gesture = false) => {
-    const r = await c.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true, userGesture: gesture })
-    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text)
-    return r.result.value
-  }
-  const waitFor = async (expression, ms) => {
-    const deadline = Date.now() + ms
-    while (Date.now() < deadline) {
-      try { if (await run(expression)) return } catch { /* mid navigation */ }
-      await sleep(500)
-    }
-    throw new Error(`timed out waiting for ${expression}`)
-  }
-  const charts = async () => {
-    await c.send('Page.navigate', { url: `${BASE}/charts` })
-    await sleep(1500)
-    await waitFor(`!!document.querySelector('${MENU}')`, 60000)
-  }
-
-  await waitFor(`location.origin === '${BASE}' && document.readyState !== 'loading'`, 60000)
-  const creds = JSON.stringify({ email: process.env.BENCH_EMAIL, password: process.env.BENCH_PASSWORD })
-  const login = await run(`fetch('/api/auth/login',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:${JSON.stringify(creds)}}).then(r=>r.status)`)
-  console.log(`sign-in status ${login}`)
-  if (login !== 200) throw new Error('sign-in refused')
-
   const close = async () => {
     cleanup()
     await sleep(2500)
     try { rmSync(profile, { recursive: true, force: true }) } catch { /* left in temp */ }
   }
-  return { child, c, run, waitFor, charts, showMainWindow, close }
+  async function boot() {
+    const pageTarget = await findPage()
+    const c = await connect(pageTarget.webSocketDebuggerUrl)
+    await c.send('Runtime.enable')
+    await c.send('Page.enable')
+    await c.send('Network.enable')
+
+    const run = async (expression, gesture = false) => {
+      const r = await c.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true, userGesture: gesture })
+      if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text)
+      return r.result.value
+    }
+    const waitFor = async (expression, ms) => {
+      const deadline = Date.now() + ms
+      while (Date.now() < deadline) {
+        try { if (await run(expression)) return } catch { /* mid navigation */ }
+        await sleep(500)
+      }
+      throw new Error(`timed out waiting for ${expression}`)
+    }
+    const charts = async () => {
+      await c.send('Page.navigate', { url: `${BASE}/charts` })
+      await sleep(1500)
+      await waitFor(`!!document.querySelector('${MENU}')`, 60000)
+    }
+
+    await waitFor(`location.origin === '${BASE}' && document.readyState !== 'loading'`, 60000)
+    const creds = JSON.stringify({ email: process.env.BENCH_EMAIL, password: process.env.BENCH_PASSWORD })
+    const login = await run(`fetch('/api/auth/login',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:${JSON.stringify(creds)}}).then(r=>r.status)`)
+    console.log(`sign-in status ${login}`)
+    if (login !== 200) throw new Error('sign-in refused')
+    return { c, run, waitFor, charts }
+  }
+
+  try {
+    return { child, showMainWindow, close, ...(await boot()) }
+  } catch (e) {
+    await close()
+    throw e
+  }
 }

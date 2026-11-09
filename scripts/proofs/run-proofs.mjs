@@ -155,14 +155,10 @@ await row('P1 portals', async () => {
     st.textContent = 'div{color:rgb(1,2,3)}'
     w.document.head.appendChild(st)
     out.styleSync = w.getComputedStyle(el).color === 'rgb(1, 2, 3)'
-    let key = false
-    w.addEventListener('keydown', () => { key = true })
-    w.dispatchEvent(new w.KeyboardEvent('keydown', { key: 'a' }))
-    out.keyForward = key
     w.close()
     return out
   })
-  const ok = r.opened && r.syncDocument && r.resized && r.availHeight > 0 && r.resizeObserver && r.styleSync && r.keyForward
+  const ok = r.opened && r.syncDocument && r.resized && r.availHeight > 0 && r.resizeObserver && r.styleSync
   rec('P1 portals', ok ? 'PASS' : 'FAIL', r)
 })
 

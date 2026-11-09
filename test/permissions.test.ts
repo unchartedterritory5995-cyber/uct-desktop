@@ -28,8 +28,16 @@ describe('isPermissionAllowed', () => {
     expect(isPermissionAllowed({ permission: 'media', origin: O }, O)).toBe(false)
   })
 
+  it('lets the site copy and go full screen, but never read the clipboard', () => {
+    expect(isPermissionAllowed({ permission: 'clipboard-sanitized-write', origin: O }, O)).toBe(true)
+    expect(isPermissionAllowed({ permission: 'fullscreen', origin: O }, O)).toBe(true)
+    expect(isPermissionAllowed({ permission: 'clipboard-sanitized-write', origin: 'https://evil.example/' }, O)).toBe(false)
+    expect(isPermissionAllowed({ permission: 'fullscreen', origin: 'https://evil.example/' }, O)).toBe(false)
+    expect(isPermissionAllowed({ permission: 'clipboard-read', origin: O }, O)).toBe(false)
+  })
+
   it('refuses everything else', () => {
-    for (const permission of ['geolocation', 'clipboard-read', 'midi', 'openExternal', 'pointerLock', 'fullscreen']) {
+    for (const permission of ['geolocation', 'clipboard-read', 'midi', 'openExternal', 'pointerLock']) {
       expect(isPermissionAllowed({ permission, origin: O }, O)).toBe(false)
     }
   })

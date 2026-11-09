@@ -12,11 +12,14 @@ if (!app.requestSingleInstanceLock()) {
   app.on('second-instance', () => {
     if (!main || main.isDestroyed()) return
     if (main.isMinimized()) main.restore()
+    main.show()
     main.focus()
   })
   app.on('window-all-closed', () => app.quit())
   void app.whenReady().then(() => {
-    installPolicy(session.fromPartition(PARTITION), ORIGIN, (c) => c.id === main?.webContents.id)
+    let mainContentsId = -1
+    installPolicy(session.fromPartition(PARTITION), ORIGIN, (c) => c.id === mainContentsId)
     main = createMainWindow()
+    mainContentsId = main.webContents.id
   })
 }
