@@ -5,14 +5,19 @@ import { isPermissionAllowed } from '../src/main/policy/permissions'
 const O = 'https://uctintelligence.com'
 
 describe('isPermissionAllowed', () => {
-  it('grants notifications to the exact app origin', () => {
-    expect(isPermissionAllowed({ permission: 'notifications', origin: `${O}/charts` }, O)).toBe(true)
+  it('grants notifications to the main window on the exact app origin', () => {
+    expect(isPermissionAllowed({ permission: 'notifications', origin: `${O}/charts`, fromMainWindow: true }, O)).toBe(true)
+  })
+
+  it('refuses notifications to every other window, so nothing notifies twice', () => {
+    expect(isPermissionAllowed({ permission: 'notifications', origin: `${O}/terminal`, fromMainWindow: false }, O)).toBe(false)
+    expect(isPermissionAllowed({ permission: 'notifications', origin: `${O}/terminal` }, O)).toBe(false)
   })
 
   it('refuses the same permission to any other origin', () => {
-    expect(isPermissionAllowed({ permission: 'notifications', origin: 'https://uctintelligence.com.evil.example/' }, O)).toBe(false)
-    expect(isPermissionAllowed({ permission: 'notifications', origin: 'http://uctintelligence.com/' }, O)).toBe(false)
-    expect(isPermissionAllowed({ permission: 'notifications', origin: '' }, O)).toBe(false)
+    expect(isPermissionAllowed({ permission: 'notifications', origin: 'https://uctintelligence.com.evil.example/', fromMainWindow: true }, O)).toBe(false)
+    expect(isPermissionAllowed({ permission: 'notifications', origin: 'http://uctintelligence.com/', fromMainWindow: true }, O)).toBe(false)
+    expect(isPermissionAllowed({ permission: 'notifications', origin: '', fromMainWindow: true }, O)).toBe(false)
   })
 
   it('grants media only when it is audio alone', () => {

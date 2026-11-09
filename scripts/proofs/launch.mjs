@@ -1,0 +1,135 @@
+// Starts the real app with only a debugging port, in a throwaway profile, and signs in over plain
+// DevTools protocol. Playwright is not used here because its launch switches and focus emulation
+// would falsify popup, background and load measurements.
+// Signs in from BENCH_EMAIL / BENCH_PASSWORD, never printed. Sends no OS keys or clicks; the only
+// OS call minimizes and restores the window this run started.
+import { execFileSync, spawn } from 'node:child_process'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
+
+export const BASE = 'https://uctintelligence.com'
+export const MENU = '[data-guide="workspace.layoutsMenuBtn"]'
+export const CHILD_TITLE = 'proof-child'
+export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+export function connect(url) {
+  return new Promise((ok, no) => {
+    const ws = new WebSocket(url)
+    let id = 0
+    const pending = new Map()
+    const listeners = []
+    ws.onmessage = (e) => {
+      const m = JSON.parse(e.data)
+      if (m.id) {
+        const p = pending.get(m.id)
+        pending.delete(m.id)
+        if (m.error) p.no(new Error(m.error.message))
+        else p.ok(m.result)
+      } else listeners.forEach((l) => l(m))
+    }
+    ws.onerror = () => no(new Error('debug socket failed'))
+    ws.onopen = () =>
+      ok({
+        send: (method, params = {}) =>
+          new Promise((res, rej) => {
+            pending.set(++id, { ok: res, no: rej })
+            ws.send(JSON.stringify({ id, method, params }))
+          }),
+        on: (l) => listeners.push(l),
+      })
+  })
+}
+
+export async function startApp(target, port) {
+  const profile = mkdtempSync(join(tmpdir(), `uct-clean-${target}-`))
+  const exe =
+    target === 'electron'
+      ? resolve('release', 'win-unpacked', 'UCT Intelligence.exe')
+      : 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
+  const args = [`--user-data-dir=${profile}`, `--remote-debugging-port=${port}`]
+  if (target === 'chrome') args.push(`--app=${BASE}/`, '--window-size=1500,950', '--no-first-run', '--no-default-browser-check')
+  const child = spawn(exe, args, { stdio: 'ignore' })
+
+  function cleanup() {
+    try { execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }) } catch { /* already gone */ }
+  }
+
+  // Finds this run's own top-level window, never one that belongs to another process.
+  function showMainWindow(command) {
+    const script = `
+Add-Type @'
+using System; using System.Runtime.InteropServices; using System.Text;
+public static class W {
+  public delegate bool E(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(E e, IntPtr l);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll", CharSet=CharSet.Unicode)] public static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+}
+'@
+$hits = New-Object System.Collections.ArrayList
+[W]::EnumWindows({ param($h, $l)
+  $p = 0; [void][W]::GetWindowThreadProcessId($h, [ref]$p)
+  if ($p -eq ${child.pid} -and [W]::IsWindowVisible($h)) {
+    $s = New-Object System.Text.StringBuilder 256; [void][W]::GetWindowText($h, $s, 256)
+    if ($s.Length -gt 0 -and $s.ToString() -notlike '*${CHILD_TITLE}*') { [void]$hits.Add($h) }
+  }
+  $true }, [IntPtr]::Zero) | Out-Null
+foreach ($h in $hits) { [void][W]::ShowWindow($h, ${command}) }
+$hits.Count`
+    return Number(execFileSync('powershell.exe', ['-NoProfile', '-Command', script], { encoding: 'utf8' }).trim())
+  }
+
+  async function findPage() {
+    const deadline = Date.now() + 60000
+    while (Date.now() < deadline) {
+      try {
+        const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
+        const hit = list.find((t) => t.type === 'page' && t.url.startsWith(BASE))
+        if (hit) return hit
+      } catch { /* not up yet */ }
+      await sleep(500)
+    }
+    throw new Error('app page did not appear')
+  }
+
+  const pageTarget = await findPage()
+  const c = await connect(pageTarget.webSocketDebuggerUrl)
+  await c.send('Runtime.enable')
+  await c.send('Page.enable')
+  await c.send('Network.enable')
+
+  const run = async (expression, gesture = false) => {
+    const r = await c.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true, userGesture: gesture })
+    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text)
+    return r.result.value
+  }
+  const waitFor = async (expression, ms) => {
+    const deadline = Date.now() + ms
+    while (Date.now() < deadline) {
+      try { if (await run(expression)) return } catch { /* mid navigation */ }
+      await sleep(500)
+    }
+    throw new Error(`timed out waiting for ${expression}`)
+  }
+  const charts = async () => {
+    await c.send('Page.navigate', { url: `${BASE}/charts` })
+    await sleep(1500)
+    await waitFor(`!!document.querySelector('${MENU}')`, 60000)
+  }
+
+  await waitFor(`location.origin === '${BASE}' && document.readyState !== 'loading'`, 60000)
+  const creds = JSON.stringify({ email: process.env.BENCH_EMAIL, password: process.env.BENCH_PASSWORD })
+  const login = await run(`fetch('/api/auth/login',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:${JSON.stringify(creds)}}).then(r=>r.status)`)
+  console.log(`sign-in status ${login}`)
+  if (login !== 200) throw new Error('sign-in refused')
+
+  const close = async () => {
+    cleanup()
+    await sleep(2500)
+    try { rmSync(profile, { recursive: true, force: true }) } catch { /* left in temp */ }
+  }
+  return { child, c, run, waitFor, charts, showMainWindow, close }
+}

@@ -8,15 +8,15 @@ app.setAppUserModelId(APP_USER_MODEL_ID)
 if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
+  let main: BrowserWindow | undefined
   app.on('second-instance', () => {
-    const win = BrowserWindow.getAllWindows()[0]
-    if (!win) return
-    if (win.isMinimized()) win.restore()
-    win.focus()
+    if (!main || main.isDestroyed()) return
+    if (main.isMinimized()) main.restore()
+    main.focus()
   })
   app.on('window-all-closed', () => app.quit())
   void app.whenReady().then(() => {
-    installPolicy(session.fromPartition(PARTITION), ORIGIN)
-    createMainWindow()
+    installPolicy(session.fromPartition(PARTITION), ORIGIN, (c) => c.id === main?.webContents.id)
+    main = createMainWindow()
   })
 }

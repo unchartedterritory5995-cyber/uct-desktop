@@ -11,6 +11,7 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build",
     "start": "npm run build && electron .",
     "pack:dir": "npm run build && electron-builder --dir"
   },

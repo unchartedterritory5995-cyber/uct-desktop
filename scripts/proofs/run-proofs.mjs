@@ -1,5 +1,7 @@
 // Side-by-side proofs: the packaged Electron app against an installed-style Chrome window.
-// Usage: node scripts/proofs/run-proofs.mjs electron|chrome
+// Usage: node scripts/proofs/run-proofs.mjs electron|chrome [--scale=1.5]
+// --scale runs only the Electron placement row with every display forced to that scale. It is a
+// simulation, and it never replaces a real mixed-scale monitor.
 // Popup blocking, background throttling and Cloudflare rows live in clean-proofs.mjs, because
 // Playwright's own launch switches would falsify them.
 // Signs in as the synthetic member account from BENCH_EMAIL / BENCH_PASSWORD. Credentials are
@@ -11,6 +13,10 @@ import { join } from 'node:path'
 
 const target = process.argv[2]
 if (target !== 'electron' && target !== 'chrome') throw new Error('target must be electron or chrome')
+
+const scale = (process.argv.find((a) => a.startsWith('--scale=')) || '').split('=')[1] || ''
+if (scale && target !== 'electron') throw new Error('--scale is Electron only')
+const resultsFile = `results-${target}${scale ? '-scale' : ''}.json`
 
 const BASE = 'https://uctintelligence.com'
 const MENU = '[data-guide="workspace.layoutsMenuBtn"]'
@@ -24,7 +30,7 @@ const log = (s) => console.log(s)
 
 function rec(row, verdict, detail) {
   results[row] = { verdict, detail }
-  writeFileSync(join(OUT, `results-${target}.json`), JSON.stringify(results, null, 2))
+  writeFileSync(join(OUT, resultsFile), JSON.stringify(results, null, 2))
   log(`[${verdict}] ${row} ${JSON.stringify(detail).slice(0, 400)}`)
 }
 
@@ -46,7 +52,7 @@ let app, browser, page
 if (target === 'electron') {
   app = await _electron.launch({
     executablePath: join('release', 'win-unpacked', 'UCT Intelligence.exe'),
-    args: [`--user-data-dir=${profile}`],
+    args: [`--user-data-dir=${profile}`, ...(scale ? [`--force-device-scale-factor=${scale}`] : [])],
     timeout: 60000,
   })
   page = await app.firstWindow({ timeout: 60000 })
@@ -83,6 +89,19 @@ const login = await page.evaluate(
 )
 log(`sign-in status ${login}`)
 if (login !== 200) throw new Error('sign-in refused')
+
+async function finish() {
+  writeFileSync(join(OUT, resultsFile), JSON.stringify(results, null, 2))
+  log('wrote results')
+  try {
+    if (app) await app.close().catch(() => undefined)
+    if (browser) await browser.close().catch(() => undefined)
+  } finally {
+    await sleep(2000)
+    try { rmSync(profile, { recursive: true, force: true }) } catch { /* left in temp */ }
+  }
+  process.exit(0)
+}
 
 async function charts() {
   await page.goto(`${BASE}/charts`, { waitUntil: 'domcontentloaded', timeout: 60000 })
@@ -153,7 +172,7 @@ async function placement(name) {
     displays = await app.evaluate(({ screen }) =>
       screen.getAllDisplays().map((d) => ({ x: d.bounds.x, y: d.bounds.y, w: d.bounds.width, h: d.bounds.height, scale: d.scaleFactor })),
     )
-    writeFileSync(join(OUT, 'displays.json'), JSON.stringify(displays))
+    if (!scale) writeFileSync(join(OUT, 'displays.json'), JSON.stringify(displays))
   } else {
     if (!existsSync(join(OUT, 'displays.json'))) throw new Error('run the electron target first')
     displays = JSON.parse(readFileSync(join(OUT, 'displays.json'), 'utf8'))
@@ -183,6 +202,7 @@ async function placement(name) {
 }
 
 await row('Placement', () => placement('Placement'))
+if (scale) await finish()
 if (target === 'chrome') {
   await row('Placement with permission', async () => {
     const cdp = await context.newCDPSession(page)
@@ -330,13 +350,4 @@ if (target === 'electron') {
   })
 }
 
-writeFileSync(join(OUT, `results-${target}.json`), JSON.stringify(results, null, 2))
-log('wrote results')
-try {
-  if (app) await app.close().catch(() => undefined)
-  if (browser) await browser.close().catch(() => undefined)
-} finally {
-  await sleep(2000)
-  try { rmSync(profile, { recursive: true, force: true }) } catch { /* left in temp */ }
-}
-process.exit(0)
+await finish()

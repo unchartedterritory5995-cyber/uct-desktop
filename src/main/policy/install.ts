@@ -1,5 +1,7 @@
-import { app, shell, type Session, type WebContents } from 'electron'
+import { app, dialog, shell, type DownloadItem, type Session, type WebContents } from 'electron'
+import { join } from 'node:path'
 import { classifyNavigation, classifyNewWindow } from './classify'
+import { safeDownloadName } from './downloads'
 import { isPermissionAllowed } from './permissions'
 
 function openExternally(url: string): void {
@@ -42,16 +44,37 @@ function guardContents(contents: WebContents, appOrigin: string): void {
   })
 }
 
-export function installPolicy(session: Session, appOrigin: string): void {
-  session.setPermissionRequestHandler((_contents, permission, callback, details) => {
+function guardDownload(item: DownloadItem): void {
+  const name = safeDownloadName(item.getFilename())
+  if (name) {
+    // Windows' own save dialog, so the member sees where it goes and decides about overwriting.
+    item.setSaveDialogOptions({ defaultPath: join(app.getPath('downloads'), name) })
+    return
+  }
+  item.cancel()
+  void dialog.showMessageBox({ type: 'info', message: 'This file type cannot be saved from the desktop app.' })
+}
+
+export function installPolicy(
+  session: Session,
+  appOrigin: string,
+  isMainWindow: (contents: WebContents) => boolean,
+): void {
+  session.on('will-download', (_event, item) => guardDownload(item))
+  session.setPermissionRequestHandler((contents, permission, callback, details) => {
     const media = 'mediaTypes' in details ? details : undefined
     const origin = media?.securityOrigin || details.requestingUrl
-    callback(isPermissionAllowed({ permission, origin, mediaTypes: media?.mediaTypes }, appOrigin))
+    callback(isPermissionAllowed({ permission, origin, mediaTypes: media?.mediaTypes, fromMainWindow: isMainWindow(contents) }, appOrigin))
   })
-  session.setPermissionCheckHandler((_contents, permission, requestingOrigin, details) => {
+  session.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
     const mediaType = 'mediaType' in details ? details.mediaType : undefined
     return isPermissionAllowed(
-      { permission, origin: details.securityOrigin || requestingOrigin, mediaTypes: mediaType ? [mediaType] : undefined },
+      {
+        permission,
+        origin: details.securityOrigin || requestingOrigin,
+        mediaTypes: mediaType ? [mediaType] : undefined,
+        fromMainWindow: contents ? isMainWindow(contents) : false,
+      },
       appOrigin,
     )
   })
