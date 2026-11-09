@@ -66,11 +66,13 @@ export async function startApp(target, port) {
   const profile = mkdtempSync(join(tmpdir(), `uct-clean-${target}-`))
   const exe =
     target === 'electron'
-      ? resolve('release', 'win-unpacked', 'UCT Intelligence.exe')
+      ? process.env.UCT_PROOF_EXE || resolve('release', 'win-unpacked', 'UCT Intelligence.exe')
       : 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
   const args = [`--user-data-dir=${profile}`, `--remote-debugging-port=${port}`]
   if (target === 'chrome') args.push(`--app=${BASE}/`, '--window-size=1500,950', '--no-first-run', '--no-default-browser-check')
   const child = spawn(exe, args, { stdio: 'ignore' })
+  let exit = null
+  child.on('exit', (code, signal) => { exit = { code, signal, at: new Date().toISOString() } })
 
   function cleanup() {
     try { execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }) } catch { /* already gone */ }
@@ -159,7 +161,7 @@ $wantIconic = ${command === 6 ? '$true' : '$false'}
   }
 
   try {
-    return { child, showMainWindow, close, ...(await boot()) }
+    return { child, showMainWindow, close, exited: () => exit, ...(await boot()) }
   } catch (e) {
     await close()
     throw e

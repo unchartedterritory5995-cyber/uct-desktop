@@ -54,6 +54,12 @@ try {
   await sleep(9000)
   rec('Launch switches', 'NOTE', { absent: SWITCHES_ABSENT, focusEmulation: false, userAgent: await run('navigator.userAgent') })
 
+  await row('Copy permission', async () => {
+    // Asks the policy without touching the owner's clipboard.
+    const state = await run("navigator.permissions.query({name:'clipboard-write'}).then(r=>r.state)")
+    rec('Copy permission', state === 'granted' ? 'PASS' : 'FAIL', { state })
+  })
+
   await row('P2 launch restore', async () => {
     const open = (prefix) => `(()=>{const o=[];for(let i=0;i<6;i++)o.push(window.open('','${prefix}'+i,'width=320,height=240,left='+(60+40*i)+',top='+(60+40*i)));const n=o.filter(Boolean).length;o.forEach(w=>w&&w.close());return n})()`
     const noGesture = await run(open('proof-a'))
@@ -111,7 +117,12 @@ try {
     await row('P6 30-minute stream', async () => {
       const from = Date.now()
       await charts()
-      await sleep(STREAM_MS)
+      for (let minute = 1; minute <= STREAM_MS / 60000; minute++) {
+        await sleep(60000)
+        const gone = app.exited()
+        if (gone) throw new Error(`app exited in minute ${minute}: ${JSON.stringify(gone)}`)
+        console.log(`stream minute ${minute}: ${seen.filter((x) => x.t >= from).length} responses`)
+      }
       const during = seen.filter((x) => x.t >= from)
       const blocked = during.filter((x) => x.cf || x.s === 403).length
       const lastResponse = during.length ? during[during.length - 1].t : 0
