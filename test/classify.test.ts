@@ -8,6 +8,10 @@ describe('classifyNewWindow', () => {
     expect(classifyNewWindow('', O, `${O}/charts`)).toBe('blank-child')
     expect(classifyNewWindow('about:blank', O, `${O}/charts`)).toBe('blank-child')
     expect(classifyNewWindow('', O, 'https://checkout.stripe.com/x')).toBe('deny')
+    expect(classifyNewWindow('', O, O)).toBe('blank-child')
+    expect(classifyNewWindow('https://news.example/a', O, O)).toBe('external')
+    expect(classifyNewWindow('', O, 'null')).toBe('deny')
+    expect(classifyNewWindow('', O, 'about:blank')).toBe('deny')
   })
 
   it('allows app children only from the app', () => {

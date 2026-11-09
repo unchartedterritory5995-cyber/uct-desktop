@@ -21,7 +21,8 @@ function guardContents(contents: WebContents, appOrigin: string): void {
   contents.on('will-attach-webview', (event) => event.preventDefault())
 
   contents.setWindowOpenHandler(({ url }) => {
-    const opener = contents.getURL()
+    // The origin, not getURL(): a popped-out portal is about:blank but carries the app's origin.
+    const opener = contents.mainFrame.origin
     const verdict = classifyNewWindow(url, appOrigin, opener)
     if (verdict === 'blank-child') {
       // Portal windows: nothing here may override sandbox, and no preload is relied on.
@@ -43,13 +44,14 @@ function guardContents(contents: WebContents, appOrigin: string): void {
 
 export function installPolicy(session: Session, appOrigin: string): void {
   session.setPermissionRequestHandler((_contents, permission, callback, details) => {
-    const mediaTypes = 'mediaTypes' in details ? details.mediaTypes : undefined
-    callback(isPermissionAllowed({ permission, origin: details.requestingUrl, mediaTypes }, appOrigin))
+    const media = 'mediaTypes' in details ? details : undefined
+    const origin = media?.securityOrigin || details.requestingUrl
+    callback(isPermissionAllowed({ permission, origin, mediaTypes: media?.mediaTypes }, appOrigin))
   })
   session.setPermissionCheckHandler((_contents, permission, requestingOrigin, details) => {
     const mediaType = 'mediaType' in details ? details.mediaType : undefined
     return isPermissionAllowed(
-      { permission, origin: requestingOrigin, mediaTypes: mediaType ? [mediaType] : undefined },
+      { permission, origin: details.securityOrigin || requestingOrigin, mediaTypes: mediaType ? [mediaType] : undefined },
       appOrigin,
     )
   })
