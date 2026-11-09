@@ -1,10 +1,10 @@
 # Prototype results (Task 12)
 
-Run 2026-11-09 after the US close, 4:05-4:35 pm ET, against production https://uctintelligence.com, as the synthetic member account. Shell commit `1241c70`, packaged unsigned, Electron 45.2.3. Compared with Chrome 156 in an app window (`--app`).
+Run 2026-11-09 after the US close, 4:05-4:38 pm ET, against production https://uctintelligence.com, as the synthetic member account. Shell commit `1241c70`, packaged unsigned, Electron 45.2.3. Compared with Chrome 156 in an app window (`--app`).
 
 ## How the rows were measured
 
-Playwright starts both browsers with popup blocking and background throttling switched off, and turns on focus emulation, which keeps a minimized page "visible". The first run's P2 and P4 passes in both targets were therefore false and are discarded. P2, P4 and P6 come from `scripts/proofs/clean-proofs.mjs`, which starts the real app with only a debugging port and observes it over the DevTools protocol. Its Chrome result shows the runner can fail: Chrome blocked 0 of 6 windows' opening and throttled the minimized page. The other rows do not depend on those switches and come from `scripts/proofs/run-proofs.mjs`.
+Playwright starts both browsers with popup blocking and background throttling switched off, and turns on focus emulation, which keeps a minimized page "visible". The first run's P2 and P4 passes in both targets were therefore false and are discarded. P2, P4 and P6 come from `scripts/proofs/clean-proofs.mjs`, which starts the real app with only a debugging port and observes it over the DevTools protocol. Its Chrome result shows the runner can fail: Chrome opened 0 of 6 windows without a click and throttled the minimized page. The other rows do not depend on those switches and come from `scripts/proofs/run-proofs.mjs`.
 
 ## Results
 
@@ -17,7 +17,7 @@ Playwright starts both browsers with popup blocking and background throttling sw
 | P4 CPU, memory, 4/8/12 charts at 09:30-10:00 ET | INCONCLUSIVE | INCONCLUSIVE | Not run. It needs the market open on the owner's monitors. Occluded and other-monitor states and real charts were also not measured. |
 | P6 `/api/alerts` | PASS | PASS | Authenticated 200 JSON. |
 | P6 500 API calls | PASS | PASS | 500 of 500 returned 200, 0 Cloudflare challenges. Electron user agent includes `UCTIntelligence/0.0.1` and `Electron/45.2.3`. |
-| P6 30-minute stream | INCONCLUSIVE | Not run | The Electron run was stopped by the system about 8 minutes in because the PC was low on memory. No result was recorded. |
+| P6 30-minute stream | INCONCLUSIVE | Not run | The Electron run was stopped by the system within about 8 minutes because the PC was low on memory. No result was recorded. |
 | P7 subset | PASS | PASS | `navigator.locks` and IndexedDB across windows worked. Renderer `Notification` permission: Electron granted without a prompt, Chrome not granted. No service worker registration exists, so Web Push failure mode was not exercised. |
 | P18 Server load | MEASURED | MEASURED | API responses per minute on idle `/charts`: Electron 308, Chrome 294.5. An earlier run of the same row read 53 and 64.5, and the difference is unexplained, so use these only to compare the two targets. |
 | P20 Route change | PASS | PASS | Board popped, five routes visited, window stayed open, all 5 widgets returned when it closed. |
