@@ -15,6 +15,12 @@ function subscribe(ipc: IpcRendererLike, channel: string, cb: (...args: unknown[
   }
 }
 
+/** The error page's own tiny bridge: just `retry`, and only on the app-shell origin. */
+export function buildShellBridge(ipc: IpcRendererLike, locationOrigin: string): { retry(): void } | null {
+  if (locationOrigin !== 'app-shell://shell') return null
+  return { retry: () => ipc.send(CHANNELS.retry) }
+}
+
 /** Null unless the page is on the app origin: the preload exposes nothing anywhere else. */
 export function buildBridge(ipc: IpcRendererLike, locationOrigin: string, appOrigin: string): UctDesktop | null {
   if (!appOrigin || locationOrigin !== appOrigin) return null

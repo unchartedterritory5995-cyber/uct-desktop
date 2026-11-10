@@ -1,7 +1,11 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import { buildBridge } from './bridge'
+import { buildBridge, buildShellBridge } from './bridge'
 
 // The main process passes the app origin as an argument, so this file is the same in every build.
 const arg = process.argv.find((a) => a.startsWith('--uct-origin='))
 const bridge = buildBridge(ipcRenderer, location.origin, arg ? arg.slice('--uct-origin='.length) : '')
 if (bridge) contextBridge.exposeInMainWorld('uctDesktop', bridge)
+
+// The offline page gets only `retry`; the website never sees it.
+const shell = buildShellBridge(ipcRenderer, location.origin)
+if (shell) contextBridge.exposeInMainWorld('uctShell', shell)

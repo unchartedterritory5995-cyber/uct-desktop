@@ -1,4 +1,5 @@
 import { build } from 'esbuild'
+import { cpSync, mkdirSync } from 'node:fs'
 
 const kind = process.env.UCT_BUILD_KIND === 'dev' ? 'dev' : 'production'
 
@@ -25,5 +26,9 @@ await build({
   external: ['electron'],
   sourcemap: false,
 })
+
+// The offline page is plain static files, served by name from dist/pages.
+mkdirSync('dist/pages', { recursive: true })
+cpSync('pages', 'dist/pages', { recursive: true })
 
 console.log(`built dist/main/index.js and dist/preload/index.js (${kind})`)

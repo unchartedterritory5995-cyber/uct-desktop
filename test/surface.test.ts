@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { buildBridge, type IpcRendererLike } from '../src/preload/bridge'
+import { buildBridge, buildShellBridge, type IpcRendererLike } from '../src/preload/bridge'
 import { BRIDGE_VERSION, CAPABILITIES, CHANNELS, hasDesktopFeature } from '../src/shared/contract'
 
 const O = 'https://uctintelligence.com'
@@ -56,6 +56,17 @@ describe('exposed surface', () => {
     const { ipc, sent } = fakeIpc()
     buildBridge(ipc, O, O)!.ackBeforeQuit()
     expect(sent).toEqual([CHANNELS.ackBeforeQuit])
+  })
+})
+
+describe('the error page bridge', () => {
+  it('exposes only retry, and only on the app-shell origin', () => {
+    const { ipc, sent } = fakeIpc()
+    expect(buildShellBridge(ipc, O)).toBeNull()
+    const s = buildShellBridge(ipc, 'app-shell://shell')!
+    expect(Object.keys(s)).toEqual(['retry'])
+    s.retry()
+    expect(sent).toEqual([CHANNELS.retry])
   })
 })
 

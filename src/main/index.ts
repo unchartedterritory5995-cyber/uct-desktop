@@ -1,4 +1,5 @@
 import { app, BrowserWindow, ipcMain, session } from 'electron'
+import { installShellProtocol, registerShellScheme } from './app-shell-protocol'
 import { registerBridgeHandlers } from './bridge/handlers'
 import { APP_USER_MODEL_ID, ORIGIN, PARTITION } from './config'
 import { installPolicy } from './policy/install'
@@ -6,6 +7,7 @@ import { createMainWindow } from './windows/main-window'
 import { followSiteTheme, installThemedTitleBars } from './windows/titlebar'
 
 app.setAppUserModelId(APP_USER_MODEL_ID)
+registerShellScheme() // must run before the app is ready
 
 if (!app.requestSingleInstanceLock()) {
   app.quit()
@@ -27,7 +29,8 @@ if (!app.requestSingleInstanceLock()) {
       getInfo: () => ({ appVersion: app.getVersion(), platform: process.platform }),
       onAckBeforeQuit: () => undefined, // the quit sequence is Task 18
     })
-    main = createMainWindow()
+    installShellProtocol(session.fromPartition(PARTITION))
+    main = createMainWindow().win
     mainContentsId = main.webContents.id
     followSiteTheme(main.webContents)
   })
