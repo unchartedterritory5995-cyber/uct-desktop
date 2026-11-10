@@ -8,6 +8,7 @@ import { installPolicy } from './policy/install'
 import { createQuitController, focusExistingWindow } from './quit'
 import { createRecovery, type RecoverableWindow } from './recovery'
 import { CHANNELS } from '../shared/contract'
+import { createElectronPlacement } from './windows/placement-electron'
 import { createMainWindow, showErrorPage } from './windows/main-window'
 import { followSiteTheme, installThemedTitleBars } from './windows/titlebar'
 
@@ -42,7 +43,7 @@ if (!app.requestSingleInstanceLock()) {
   void app.whenReady().then(() => {
     installThemedTitleBars()
     let mainContentsId = -1
-    installPolicy(session.fromPartition(PARTITION), ORIGIN, (c) => c.id === mainContentsId)
+    installPolicy(session.fromPartition(PARTITION), ORIGIN, (c) => c.id === mainContentsId, createElectronPlacement())
     registerBridgeHandlers(ipcMain, {
       origin: ORIGIN,
       getInfo: () => ({ appVersion: app.getVersion(), platform: process.platform }),
