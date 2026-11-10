@@ -2,7 +2,7 @@ import { app, autoUpdater, BrowserWindow, clipboard, crashReporter, dialog, ipcM
 import { join } from 'node:path'
 import { installShellProtocol, registerShellScheme } from './app-shell-protocol'
 import { registerBridgeHandlers } from './bridge/handlers'
-import { APP_USER_MODEL_ID, ORIGIN, PARTITION } from './config'
+import { APP_USER_MODEL_ID, ORIGIN, PARTITION, TRAY_RESIDENCY_ENABLED } from './config'
 import { buildDiagnostics } from './diagnostics'
 import { createEventLog } from './event-log'
 import { buildMenuTemplate, performReset, resetStorages } from './menu'
@@ -30,8 +30,12 @@ if (!app.requestSingleInstanceLock()) {
   log.startSession(app.getVersion())
   // Monitor only: it observes and never changes how an uncaught error behaves.
   process.on('uncaughtExceptionMonitor', (err, origin) =>
-    log.record('main-error', { origin, message: err instanceof Error ? err.message : String(err), at: err instanceof Error ? (err.stack ?? '').split('
-')[1]?.trim() : undefined }),
+    log.record('main-error', { origin, message: err instanceof Error ? err.message : String(err), at: err instanceof Error ? (err.stack ?? '').split('\n')[1]?.trim() : undefined }),
+  )
+  // The monitor above does not see rejected promises that nothing awaited. Electron's main process
+  // only warns on those, so logging them changes nothing about how the app behaves.
+  process.on('unhandledRejection', (reason) =>
+    log.record('main-unhandled-rejection', { message: reason instanceof Error ? reason.message : String(reason) }),
   )
   app.on('render-process-gone', (_e, wc, d) => log.record('render-process-gone', { reason: d.reason, exitCode: d.exitCode, main: wc.id === siteContents?.id }))
   app.on('child-process-gone', (_e, d) => log.record('child-process-gone', { type: d.type, reason: d.reason, exitCode: d.exitCode, name: d.name ?? d.serviceName }))
@@ -52,10 +56,14 @@ if (!app.requestSingleInstanceLock()) {
 
   let residency: ReturnType<typeof createResidency> | undefined
   let tray: Tray | undefined // kept referenced, or it is garbage-collected and vanishes
-  // A second launch (desktop icon, Start menu) opens the resident desk instantly.
-  app.on('second-instance', () => {
+  let openWhenReady = false
+  // A second launch (desktop icon, Start menu) opens the resident desk instantly. A second login-item
+  // start (--hidden) must not pop a window, and a click before the app is ready is kept, not lost.
+  app.on('second-instance', (_e, argv) => {
+    if (launchedHidden(argv)) return
     if (residency) residency.open()
-    else focusExistingWindow(main)
+    else if (main) focusExistingWindow(main)
+    else openWhenReady = true
   })
   app.on('window-all-closed', () => app.quit())
   app.on('before-quit', (event) => {
@@ -88,7 +96,9 @@ if (!app.requestSingleInstanceLock()) {
       onAckBeforeQuit: () => quit.ack(),
     })
     installShellProtocol(session.fromPartition(PARTITION))
-    const startHidden = launchedHidden(process.argv)
+    // The tray is OFF until the website's idle mode (Task 22) and a working updater exist: a resident
+    // app that cannot go idle would poll the server all night, and one that cannot update never would.
+    const startHidden = TRAY_RESIDENCY_ENABLED && launchedHidden(process.argv) && !openWhenReady
     const created = createMainWindow({ stayHidden: () => (residency ? residency.isHidden() : startHidden) })
     const win = created.win
     siteContents = created.site
@@ -96,26 +106,41 @@ if (!app.requestSingleInstanceLock()) {
     barContentsId = created.bar.id
     let resetting = false
     main = win
-    const allWindows = () => BrowserWindow.getAllWindows().filter((w) => !w.isDestroyed())
-    residency = createResidency({
-      clock,
-      now: () => Date.now(),
-      hideAll: () => allWindows().forEach((w) => w.hide()),
-      showAll: () => {
-        allWindows().forEach((w) => w !== win && w.showInactive())
-        focusExistingWindow(win)
-      },
-      hasPendingUpdate: () => false, // until the updater is wired (Task 28 feed): nothing to install
-      installUpdate: () => {
-        log.record('update-install-idle')
-        void quit.prepareForUpdate().then(() => autoUpdater.quitAndInstall())
-      },
-    })
-    const openDesk = () => residency?.open()
     const quitApp = () => {
       residency?.quitRequested()
       quit.requestQuit('quit')
     }
+    if (TRAY_RESIDENCY_ENABLED) {
+    // Only the windows this hide made invisible come back, in the state they had: a board the member
+    // had minimized stays minimized.
+    let hiddenByUs: { w: BrowserWindow; minimized: boolean }[] = []
+    residency = createResidency({
+      clock,
+      now: () => Date.now(),
+      hideAll: () => {
+        hiddenByUs = BrowserWindow.getAllWindows()
+          .filter((w) => !w.isDestroyed() && w.isVisible())
+          .map((w) => ({ w, minimized: w.isMinimized() }))
+        hiddenByUs.forEach(({ w }) => w.hide())
+      },
+      showAll: () => {
+        for (const { w, minimized } of hiddenByUs) {
+          if (w.isDestroyed() || w === win) continue
+          if (minimized) w.minimize()
+          else w.showInactive()
+        }
+        hiddenByUs = []
+        focusExistingWindow(win)
+      },
+      // Not wired yet: Task 28's electron-updater client and feed come first. Until then nothing is
+      // ever pending, and installUpdate is unreachable by construction.
+      hasPendingUpdate: () => false,
+      // Fails safe: until the website reports what is at stake (unsaved text, armed alerts, audio,
+      // microphone), every moment counts as busy.
+      isBusy: () => true,
+      installUpdate: () => log.record('update-install-not-wired'),
+    })
+    const openDesk = () => residency?.open()
     tray = new Tray(nativeImage.createFromPath(join(__dirname, '..', 'icon.png')).resize({ width: 16, height: 16 }))
     tray.setToolTip('UCT Intelligence')
     const buildTrayMenu = () =>
@@ -141,6 +166,8 @@ if (!app.requestSingleInstanceLock()) {
       residency.startHidden()
       log.record('started-in-tray')
     }
+    } // TRAY_RESIDENCY_ENABLED
+    if (openWhenReady) focusExistingWindow(win)
 
     win.on('close', (event) => {
       if (!quit.allowClose() && residency?.onClose() === 'hide') {
@@ -162,18 +189,28 @@ if (!app.requestSingleInstanceLock()) {
     // A page-level beforeunload guard (unsaved text) can cancel a quit and would repeat on every X.
     created.site.on('will-prevent-unload', (event) => {
       created.closer.promptShown()
-      const leave = quit.handleUnloadPrevented(
-        () =>
+      const leave = quit.handleUnloadPrevented(() => {
+        // A modal parented to a hidden window may never surface, and this one blocks the main
+        // process: bring the desk back first so the member can see the question.
+        if (!win.isDestroyed() && !win.isVisible()) {
+          if (residency) residency.open()
+          else win.show()
+        }
+        return (
           dialog.showMessageBoxSync(win, {
             type: 'question',
             message: 'You have unsaved text. Leave anyway?',
             buttons: ['Leave', 'Stay'],
             defaultId: 1,
             cancelId: 1,
-          }) === 0,
-      )
+          }) === 0
+        )
+      })
       if (leave || resetting) event.preventDefault() // preventDefault lets the unload go ahead
-      else created.closer.reset() // Stay: a later X must work again
+      else {
+        created.closer.reset() // Stay: a later X must work again
+        residency?.quitCancelled() // ...and hide to the tray again, not quit
+      }
     })
     win.on('session-end', () => {
       residency?.quitRequested()

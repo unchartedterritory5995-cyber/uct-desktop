@@ -17,6 +17,13 @@ describe('buildDiagnostics', () => {
     expect(out).not.toContain('a@b.com')
   })
 
+  it('removes the Windows account name from paths', () => {
+    const out = buildDiagnostics({ ...base, events: ['at main (C:\\Users\\Patrick\\AppData\\x.js:1)', 'C:/Users/Some.One/a'] })
+    expect(out).not.toContain('Patrick')
+    expect(out).not.toContain('Some.One')
+    expect(out).toContain('[user]')
+  })
+
   it('omits the section when there are no events', () => {
     expect(buildDiagnostics(base)).not.toContain('Recent events:')
     expect(buildDiagnostics({ ...base, events: [] })).not.toContain('Recent events:')

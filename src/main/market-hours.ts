@@ -15,3 +15,11 @@ export function isMarketHours(epochMs: number): boolean {
   const minutes = Number(parts.hour) * 60 + Number(parts.minute)
   return minutes >= 9 * 60 + 30 && minutes < 16 * 60
 }
+
+/** 4:00-20:00 Eastern, Monday to Friday: pre-market, regular and after-hours trading. */
+export function isExtendedSession(epochMs: number): boolean {
+  const parts = Object.fromEntries(ET.formatToParts(new Date(epochMs)).map((p) => [p.type, p.value]))
+  if (parts.weekday === 'Sat' || parts.weekday === 'Sun') return false
+  const minutes = Number(parts.hour) * 60 + Number(parts.minute)
+  return minutes >= 4 * 60 && minutes < 20 * 60
+}

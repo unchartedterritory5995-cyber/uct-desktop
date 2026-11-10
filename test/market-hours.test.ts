@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isMarketHours } from '../src/main/market-hours'
+import { isExtendedSession, isMarketHours } from '../src/main/market-hours'
 
 // Eastern is UTC-4 in summer time (EDT) and UTC-5 in winter time (EST).
 // 2026 US clock changes: Sunday 2026-03-08 (spring forward) and Sunday 2026-11-01 (fall back).
@@ -38,5 +38,19 @@ describe('isMarketHours', () => {
     expect(isMarketHours(utc(2026, 11, 2, 13, 30))).toBe(false)
     expect(isMarketHours(utc(2026, 11, 2, 14, 30))).toBe(true)
     expect(isMarketHours(utc(2026, 11, 2, 20, 30))).toBe(true)
+  })
+})
+
+describe('isExtendedSession', () => {
+  it('covers 4:00 to 20:00 ET on weekdays, across both clock changes', () => {
+    expect(isExtendedSession(utc(2026, 11, 9, 8, 59))).toBe(false) // 3:59 EST
+    expect(isExtendedSession(utc(2026, 11, 9, 9, 0))).toBe(true) // 4:00 EST
+    expect(isExtendedSession(utc(2026, 11, 10, 0, 59))).toBe(true) // Mon 19:59 EST
+    expect(isExtendedSession(utc(2026, 11, 10, 1, 0))).toBe(false) // Mon 20:00 EST
+    expect(isExtendedSession(utc(2026, 3, 9, 8, 0))).toBe(true) // 4:00 EDT
+    expect(isExtendedSession(utc(2026, 3, 9, 7, 59))).toBe(false) // 3:59 EDT
+  })
+  it('is closed on weekends', () => {
+    expect(isExtendedSession(utc(2026, 11, 14, 15, 0))).toBe(false)
   })
 })

@@ -185,6 +185,8 @@ export function createMainWindow(options: MainWindowOptions = {}): MainWindow {
   for (const e of ['maximize', 'unmaximize', 'minimize', 'restore', 'enter-full-screen', 'leave-full-screen', 'hide', 'show'] as const) {
     win.on(e as 'maximize', sendState)
   }
+  // A start in the tray never fires 'hide': tell each freshly loaded page the state it is in.
+  site.on('did-finish-load', sendState)
 
   // ---- closing: the site view is not unloaded by closing the window, so do it explicitly ----
   const closer = createSiteCloser({

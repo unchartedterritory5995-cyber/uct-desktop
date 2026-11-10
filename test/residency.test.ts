@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { createResidency, IDLE_BEFORE_INSTALL_MS, INSTALL_CHECK_MS, launchedHidden } from '../src/main/residency'
 import type { Clock } from '../src/main/load-guard'
 
-// 2026-11-10 is a Tuesday. 15:00 UTC = 10:00 ET (open), 23:00 UTC = 18:00 ET (closed).
+// 2026-11-10 is a Tuesday. 15:00 UTC = 10:00 ET (open); 23:00 UTC = 18:00 ET (after-hours trading);
+// Wed 03:00 UTC = Tue 22:00 ET (quiet: outside the 4:00-20:00 extended session).
 const OPEN = Date.UTC(2026, 10, 10, 15, 0)
-const CLOSED = Date.UTC(2026, 10, 10, 23, 0)
+const AFTER_HOURS = Date.UTC(2026, 10, 10, 23, 0)
+const CLOSED = Date.UTC(2026, 10, 11, 3, 0)
 
 function setup(start: number, pending = true) {
   let t = start
@@ -26,13 +28,14 @@ function setup(start: number, pending = true) {
     t = end
   }
   const log: string[] = []
-  const state = { pending, visible: true }
+  const state = { pending, visible: true, busy: false }
   const r = createResidency({
     clock,
     now: () => t,
     hideAll: () => { state.visible = false; log.push('hide') },
     showAll: () => { state.visible = true; log.push('show') },
     hasPendingUpdate: () => state.pending,
+    isBusy: () => state.busy,
     installUpdate: () => log.push('install'),
   })
   return { r, log, advance, state, timers }
@@ -78,9 +81,38 @@ describe('createResidency', () => {
   })
 
   it('never installs while a window is showing', () => {
-    const { log, advance } = setup(CLOSED)
+    const { r, log, advance } = setup(CLOSED)
+    r.onClose()
+    r.open()
     advance(5 * IDLE_BEFORE_INSTALL_MS)
     expect(log).not.toContain('install')
+  })
+
+  it('never installs during after-hours trading (18:00 ET)', () => {
+    const { r, log, advance } = setup(AFTER_HOURS)
+    r.onClose()
+    advance(60 * 60_000) // 18:00 to 19:00 ET
+    expect(log).not.toContain('install')
+  })
+
+  it('never installs while something is at stake, and installs once it clears', () => {
+    const { r, log, advance, state } = setup(CLOSED)
+    state.busy = true
+    r.onClose()
+    advance(3 * IDLE_BEFORE_INSTALL_MS)
+    expect(log).not.toContain('install')
+    state.busy = false
+    advance(INSTALL_CHECK_MS)
+    expect(log.filter((x) => x === 'install')).toHaveLength(1)
+  })
+
+  it('a cancelled quit (Stay) makes the app resident again', () => {
+    const { r, log, advance } = setup(CLOSED)
+    r.quitRequested()
+    r.quitCancelled()
+    expect(r.onClose()).toBe('hide')
+    advance(IDLE_BEFORE_INSTALL_MS + INSTALL_CHECK_MS)
+    expect(log).toContain('install')
   })
 
   it('opening the app restarts the idle wait', () => {

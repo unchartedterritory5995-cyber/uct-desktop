@@ -26,6 +26,10 @@ Written while a load proof was using the PC, so `npm run check` has not run on i
 | `src/main/index.ts`, `windows/main-window.ts` | Wiring: tray, `hidden` window state to the site, hidden start, crash/hang/load-failure logging |
 | `scripts/proofs/load-proofs.mjs` | Reports every window's state when a step fails |
 
+## Review fixes (second commit on the branch)
+
+An independent review found the branch did not compile and had five behaviour bugs; all fixed (see the plan's "Independent review" section). **The tray is OFF in production builds** (`TRAY_RESIDENCY_ENABLED` in `config.ts`) until Task 22 and the updater exist; a dev build turns it on with `UCT_DESKTOP_TRAY=1`. Today's load numbers are unusable (overlapping runs); a clean run started 12:55 CT.
+
 ## Next steps, in order
 
 1. `npm run check` (typecheck, vitest, build). Fix what fails. Never build while a proof is running: proofs launch `release/win-unpacked`.

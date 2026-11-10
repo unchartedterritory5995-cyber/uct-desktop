@@ -10,6 +10,8 @@ const RULES: [RegExp, string][] = [
   [/(["']?)\b([A-Za-z_-]*(?:token|secret|password|passwd|pwd|apikey|api_key|key|session|sid|cookie)[A-Za-z_-]*)\1\s*[=:]\s*(?:"[^"]*"|'[^']*'|[^\s&,;"']+)/gi, '$2=[removed]'],
   [/\b(?:sk|pk|rk|whsec)_[A-Za-z0-9_]{8,}/g, '[removed-key]'],
   [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[removed-email]'],
+  // Windows profile paths carry the account name (C:\Users\<name>\..., also with forward slashes).
+  [/([A-Za-z]:[\\/]+Users[\\/]+)[^\\/\s"']+/gi, '$1[user]'],
   [/(https?:\/\/[^\s?#]+)[?#][^\s]*/g, '$1'],
   [/\b[A-Za-z0-9+/_-]{40,}={0,2}/g, '[removed-long-value]'],
 ]

@@ -63,6 +63,35 @@ describe('createEventLog', () => {
     expect(() => log.tail(5)).not.toThrow()
   })
 
+  it('never throws when every disk call fails', () => {
+    const broken: LogFs = new Proxy({} as LogFs, { get: () => () => { throw new Error('EIO') } })
+    const log = createEventLog({ dir: DIR, fs: broken, now: () => T0 })
+    expect(() => log.record('x', { a: 1 })).not.toThrow()
+    expect(log.tail(5)).toEqual([])
+    expect(() => log.startSession('0.1.3')).not.toThrow()
+    expect(() => log.endSession('quit')).not.toThrow()
+  })
+
+  it('keeps logging when rotation is blocked (antivirus holding the old file)', () => {
+    const fs = memFs()
+    fs.rename = () => { throw new Error('EBUSY') }
+    const log = createEventLog({ dir: DIR, fs, now: () => T0, maxBytes: 200 })
+    for (let i = 0; i < 20; i++) log.record('tick', { i })
+    const lines = fs.files.get(`${DIR}/events.log`)!.trim().split('\n')
+    expect(JSON.parse(lines[lines.length - 1]).i).toBe(19)
+    expect(fs.size(`${DIR}/events.log`)).toBeLessThanOrEqual(200)
+  })
+
+  it('writes one exit line even when session-end is followed by will-quit', () => {
+    const fs = memFs()
+    const log = createEventLog({ dir: DIR, fs, now: () => T0 })
+    log.startSession('0.1.3')
+    log.endSession('session-end')
+    log.endSession('quit')
+    const exits = log.tail(10).map((l) => JSON.parse(l)).filter((e) => e.event === 'exit')
+    expect(exits).toEqual([expect.objectContaining({ reason: 'session-end' })])
+  })
+
   it('tail returns the newest lines across the rotation boundary', () => {
     const fs = memFs()
     const log = createEventLog({ dir: DIR, fs, now: () => T0, maxBytes: 200 })

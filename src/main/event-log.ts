@@ -52,8 +52,14 @@ export function createEventLog(deps: { dir: string; fs: LogFs; now(): number; ma
       }
       const line = JSON.stringify(clean) + '\n'
       if (fs.exists(current) && fs.size(current) + line.length > maxBytes) {
-        if (fs.exists(previous)) fs.unlink(previous)
-        fs.rename(current, previous)
+        // If rotating fails (an antivirus scan holding events.1.log, say), start the current file
+        // over instead: losing old lines is better than refusing every new one from here on.
+        const rotated = safe(() => {
+          if (fs.exists(previous)) fs.unlink(previous)
+          fs.rename(current, previous)
+          return true
+        }, false)
+        if (!rotated) fs.writeFile(current, '')
       }
       fs.appendFile(current, line)
     }, undefined)
@@ -91,7 +97,10 @@ export function createEventLog(deps: { dir: string; fs: LogFs; now(): number; ma
   }
 
   /** Call when the process is about to exit on purpose (will-quit). */
+  let ended = false
   function endSession(reason: string): void {
+    if (ended) return // session-end is followed by will-quit: one exit line, the first reason
+    ended = true
     record('exit', { reason })
     safe(() => fs.exists(marker) && fs.unlink(marker), false)
   }

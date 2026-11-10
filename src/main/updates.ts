@@ -2,8 +2,11 @@
 // every rule is unit-tested without Electron or a network. Wiring to electron-updater is separate.
 //
 // Rules:
-// * Download in the background, install on quit. Close means quit, so that is daily. The controller
-//   NEVER calls quitAndInstall: a trader is never interrupted by an update, in or out of market hours.
+// * Download in the background, install on a real quit. With tray residency a real quit is rare, so
+//   the residency module also installs when the desk is hidden and idle outside the extended session
+//   (residency.ts). This controller itself NEVER calls quitAndInstall: a trader is never interrupted.
+// * NOT YET WIRED: index.ts still uses Electron's built-in autoUpdater for the before-quit-for-update
+//   hook only; the electron-updater client, the feed (Task 27) and signing come before any install.
 // * Never downgrade, including after a channel change (electron-updater sets allowDowngrade when the
 //   channel is assigned, so it is put back every time).
 // * A downloaded version that the feed stops offering (halted, pulled) is not installed on quit.
