@@ -26,9 +26,12 @@ const PORT = target === 'electron' ? 9337 : 9338
 // runs there) plus Chromium's own counters, instead of the frame measurement.
 const profileArg = process.argv.find((a) => a.startsWith('--profile='))
 const PROFILE_N = profileArg ? Number(profileArg.split('=')[1]) : 0
-const STEPS = PROFILE_N ? [PROFILE_N] : dry ? [2] : [4, 8, 12]
-const SETTLE_MS = dry ? 20000 : 60000
-const MEASURE_MS = dry ? 20000 : 300000
+// --quick=N: one step of N widgets, 30 s settle, 60 s measure (for A/B tests such as monitor or GPU).
+const quickArg = process.argv.find((a) => a.startsWith('--quick='))
+const QUICK_N = quickArg ? Number(quickArg.split('=')[1]) : 0
+const STEPS = PROFILE_N ? [PROFILE_N] : QUICK_N ? [QUICK_N] : dry ? [2] : [4, 8, 12]
+const SETTLE_MS = dry ? 20000 : QUICK_N ? 30000 : 60000
+const MEASURE_MS = dry ? 20000 : QUICK_N ? 60000 : 300000
 const SYMBOLS = ['NVDA', 'AAPL', 'MSFT', 'AMZN', 'META', 'GOOGL', 'TSLA', 'AMD', 'AVGO', 'SPY', 'QQQ', 'IWM']
 const WIDTH = 480
 const HEIGHT = 360
@@ -38,7 +41,7 @@ const POP = '[aria-label="Pop out widget"]'
 
 mkdirSync(OUT, { recursive: true })
 const results = { target, surface: 'charts-widget-popouts', startedUtc: new Date().toISOString(), dry, steps: [] }
-const file = join(OUT, `results-charts-load-${target}${dry ? '-dry' : ''}.json`)
+const file = join(OUT, `results-charts-load-${target}${dry ? '-dry' : ''}${QUICK_N ? `-quick-d${displayIndex}` : ''}.json`)
 const save = () => writeFileSync(file, JSON.stringify(results, null, 2))
 
 // 12 independent ("not linked", colour N) chart widgets on the 24-column, 20-row grid: 4 across, 3 down.
@@ -232,6 +235,16 @@ try {
     }
     await sleep(SETTLE_MS)
     if (PROFILE_N) {
+      // Redraw rate: every Lightweight Charts repaint clears its canvases first, so clearRect calls
+      // per second per window (divided by that window's canvases) is how often its charts redraw.
+      const COUNT_JS = `(()=>{const P=CanvasRenderingContext2D.prototype;if(!P.__orig){P.__orig=P.clearRect;window.__clears=0;P.clearRect=function(...a){window.__clears++;return P.__orig.apply(this,a)}}window.__clears=0;return true})()`
+      const READ_JS = `({clears:window.__clears,canvases:document.querySelectorAll('canvas').length})`
+      for (const s of [c, ...sessions]) await evalIn(s, COUNT_JS)
+      await sleep(10000)
+      const per = []
+      for (const s of [c, ...sessions]) per.push(await evalIn(s, READ_JS))
+      results.redraws = per.map((r, i) => ({ window: i === 0 ? 'main' : `popout-${i}`, clearsPerSec: Math.round(r.clears / 10), canvases: r.canvases, redrawsPerCanvasPerSec: r.canvases ? Math.round((r.clears / 10 / r.canvases) * 10) / 10 : null }))
+      console.log(`[REDRAWS] ${JSON.stringify(results.redraws)}`)
       results.profile = await profile(c)
       save()
       console.log(`[PROFILE] ${count} widgets: ${JSON.stringify(results.profile.summary)}`)
