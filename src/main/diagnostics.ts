@@ -33,6 +33,8 @@ export interface DiagnosticsInput {
   metrics: ProcessMetric[]
   /** Size of the persist:uct HTTP cache, from session.getCacheSize(). */
   cacheBytes: number
+  /** Newest event-log lines (already scrubbed once; scrubbed again here). */
+  events?: string[]
 }
 
 export function buildDiagnostics(d: DiagnosticsInput): string {
@@ -43,6 +45,7 @@ export function buildDiagnostics(d: DiagnosticsInput): string {
     `Partition cache bytes: ${d.cacheBytes}`,
     'Processes:',
     ...d.metrics.map((m) => `  ${m.type} pid=${m.pid} memoryKb=${m.memoryKb} cpu=${m.cpuPercent}${m.note ? ` ${m.note}` : ''}`),
+    ...(d.events && d.events.length ? ['Recent events:', ...d.events.map((e) => `  ${e}`)] : []),
   ]
   return scrub(lines.join('\n'))
 }

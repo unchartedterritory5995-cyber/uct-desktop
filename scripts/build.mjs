@@ -42,5 +42,7 @@ await build({
 // The offline page is plain static files, served by name from dist/pages.
 mkdirSync('dist/pages', { recursive: true })
 cpSync('pages', 'dist/pages', { recursive: true })
+// The tray icon is loaded from beside the main bundle.
+cpSync('build/icon.png', 'dist/icon.png')
 
 console.log(`built dist/main/index.js and dist/preload/index.js (${kind})`)

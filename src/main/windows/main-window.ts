@@ -22,6 +22,7 @@ import { headerValue, makeRetryHandler, wireLoadEvents } from './wiring'
 export type ErrorKind = 'origin-error' | 'network-error' | 'crash' | 'reset'
 
 function windowState(win: BrowserWindow): WindowState {
+  if (!win.isVisible()) return 'hidden' // in the tray: the website goes idle
   if (win.isFullScreen()) return 'fullscreen'
   if (win.isMinimized()) return 'minimized'
   if (win.isMaximized()) return 'maximized'
@@ -40,7 +41,13 @@ export interface MainWindow {
   showError(kind: ErrorKind): Promise<void>
 }
 
-export function createMainWindow(): MainWindow {
+export interface MainWindowOptions {
+  /** True while the app should stay in the tray (started with Windows, or closed to the tray). */
+  stayHidden?: () => boolean
+}
+
+export function createMainWindow(options: MainWindowOptions = {}): MainWindow {
+  const stayHidden = options.stayHidden ?? (() => false)
   const start = currentCaptionColors()
   const win = new BrowserWindow({
     width: 1500,
@@ -134,6 +141,7 @@ export function createMainWindow(): MainWindow {
   site.on('did-finish-load', focusSite)
   win.on('focus', focusSite)
   win.once('ready-to-show', () => {
+    if (stayHidden()) return // started in the tray: the page loads now, the window shows on open
     win.show()
     focusSite()
   })
@@ -142,7 +150,9 @@ export function createMainWindow(): MainWindow {
   const showError = (kind: ErrorKind): Promise<void> => {
     if (win.isDestroyed() || site.isDestroyed()) return Promise.resolve()
     // Show the window first: an offline start must not be an invisible process holding the lock.
-    if (!win.isVisible()) win.show()
+    // In the tray, the error page waits behind the hidden window instead (a login start before the
+    // network is up must not pop a window); the tray icon still offers Open.
+    if (!win.isVisible() && !stayHidden()) win.show()
     return site.loadURL(`${APP_SHELL_ORIGIN}/error.html?k=${kind}`).catch(() => undefined)
   }
   const guard = createLoadGuard({
@@ -172,7 +182,7 @@ export function createMainWindow(): MainWindow {
   const sendState = (): void => {
     if (!win.isDestroyed() && !site.isDestroyed()) site.send(CHANNELS.windowState, windowState(win))
   }
-  for (const e of ['maximize', 'unmaximize', 'minimize', 'restore', 'enter-full-screen', 'leave-full-screen'] as const) {
+  for (const e of ['maximize', 'unmaximize', 'minimize', 'restore', 'enter-full-screen', 'leave-full-screen', 'hide', 'show'] as const) {
     win.on(e as 'maximize', sendState)
   }
 
