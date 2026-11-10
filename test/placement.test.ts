@@ -8,8 +8,8 @@ import {
   sizeFromFeatures,
   type PlacedWindow,
 } from '../src/main/windows/placement'
-import { parseWindowName } from '../src/main/windows/layout-store'
-import { deskProfile, fingerprintDisplay, type DisplayInfo, type Rect, type WindowRecord } from '../src/main/windows/display'
+import { createLayoutStore, parseWindowName, type StoreFs } from '../src/main/windows/layout-store'
+import { deskProfile, fingerprintDisplay, ordinalOf, type DisplayInfo, type Rect, type WindowRecord } from '../src/main/windows/display'
 import type { Clock } from '../src/main/load-guard'
 
 describe('parseWindowName', () => {
@@ -74,6 +74,8 @@ function setup(displays: DisplayInfo[] = [disp(1, 0), disp(2, 1920)]) {
   const store = {
     saveWindow: (p: string, n: string, r: WindowRecord) => void saved.set(`${p}/${n}`, r),
     getWindow: (p: string, n: string) => saved.get(`${p}/${n}`),
+    findNewest: (n: string) =>
+      [...saved].filter(([k]) => k.endsWith(`/${n}`)).map(([, r]) => r).sort((a, b) => b.savedAt - a.savedAt)[0],
   }
   let current = displays
   const placement = createPlacement({ store, getDisplays: () => current, now: () => t, clock })
@@ -86,16 +88,18 @@ function fakeWin(bounds: Rect = { x: 50, y: 60, width: 700, height: 500 }) {
   const w = Object.assign(ee, {
     b: { ...bounds },
     set: [] as Rect[],
+    calls: [] as string[],
     destroyed: false,
     max: false,
     full: false,
-    setBounds(r: Rect) { w.b = { ...r }; w.set.push({ ...r }) },
+    setBounds(r: Rect) { w.b = { ...r }; w.set.push({ ...r }); w.calls.push('setBounds') },
     getBounds: () => ({ ...w.b }),
     getNormalBounds: () => ({ ...w.b }),
     isMaximized: () => w.max,
     isFullScreen: () => w.full,
-    maximize() { w.max = true },
-    setFullScreen(f: boolean) { w.full = f },
+    maximize() { w.max = true; w.calls.push('maximize') },
+    unmaximize() { w.max = false; w.calls.push('unmaximize') },
+    setFullScreen(f: boolean) { w.full = f; w.calls.push(`full:${f}`) },
     isDestroyed: () => w.destroyed,
   })
   return w as typeof w & PlacedWindow
@@ -245,5 +249,131 @@ describe('display changes', () => {
     advance(QUIET_AFTER_SCREEN_MS)
     w.emit('moved') // event caused by our setBounds, not the member
     expect(saved.size).toBe(0)
+  })
+})
+
+describe('maximized and full-screen windows on a display change', () => {
+  const two = [disp(1, 0), disp(2, 1920)]
+  function maximizedOnWrongDisplay() {
+    const ctx = setup(two)
+    ctx.saved.set(`${deskProfile(two)}/uct-board-a`, record(two[1], { x: 2000, y: 100, width: 800, height: 600 }))
+    const w = fakeWin()
+    ctx.placement.onCreated(w, 'uct-board-a')
+    return { ...ctx, w }
+  }
+  it('moves a maximized window to the right monitor and restores its state', () => {
+    const { placement, advance, w } = maximizedOnWrongDisplay()
+    w.max = true
+    w.b = { x: 0, y: 0, width: 1920, height: 1040 } // maximized on monitor 1, but it belongs on 2
+    w.calls.length = 0
+    placement.screenEvent()
+    advance(DEBOUNCE_MS)
+    expect(w.calls).toEqual(['unmaximize', 'setBounds', 'maximize'])
+    expect(w.set.at(-1)).toEqual({ x: 2000, y: 100, width: 800, height: 600 })
+  })
+  it('leaves a maximized window alone when it is already on the right monitor', () => {
+    const { placement, advance, w } = maximizedOnWrongDisplay()
+    w.max = true
+    w.b = { x: 1920, y: 0, width: 1920, height: 1040 }
+    w.calls.length = 0
+    placement.screenEvent()
+    advance(DEBOUNCE_MS)
+    expect(w.calls).toEqual([])
+  })
+  it('does the same dance for full screen', () => {
+    const { placement, advance, w } = maximizedOnWrongDisplay()
+    w.full = true
+    w.b = { x: 0, y: 0, width: 1920, height: 1080 }
+    w.calls.length = 0
+    placement.screenEvent()
+    advance(DEBOUNCE_MS)
+    expect(w.calls).toEqual(['full:false', 'setBounds', 'full:true'])
+  })
+})
+
+describe('a record from another desk', () => {
+  function realStore() {
+    const files = new Map<string, string>()
+    const fs: StoreFs = {
+      readFile: (p) => {
+        if (!files.has(p)) throw new Error('ENOENT')
+        return files.get(p)!
+      },
+      writeFile: (p, d) => void files.set(p, d),
+      rename: (a, b) => (files.set(b, files.get(a)!), void files.delete(a)),
+      mkdir: () => undefined,
+    }
+    return createLayoutStore({ file: 'C:/ud/layout.json', fs })
+  }
+  it('opens a board where its newest record says, clamped onto a remaining monitor', () => {
+    const store = realStore()
+    const away = [disp(1, 0), { ...disp(2, 1920), bounds: { x: 1920, y: 0, width: 2560, height: 1440 }, workArea: { x: 1920, y: 0, width: 2560, height: 1400 } }]
+    const oldRec = record(away[1], { x: 2200, y: 300, width: 900, height: 700 })
+    oldRec.savedAt = 50
+    store.saveWindow(deskProfile(away), 'uct-board-a', oldRec)
+    const before = JSON.stringify(oldRec)
+    const home = [disp(1, 0)] // a laptop on its own: a profile with no record
+    const { placement } = (() => {
+      const c = setup(home)
+      const p = createPlacementFor(store, home)
+      return { ...c, placement: p }
+    })()
+    const opts = placement.openOptions('uct-board-a', 'popup,width=640,height=480')!
+    expect(opts.x! + opts.width!).toBeLessThanOrEqual(1920)
+    expect(opts.y! + opts.height!).toBeLessThanOrEqual(1040)
+    expect(opts.x!).toBeGreaterThanOrEqual(0)
+    expect(JSON.stringify(store.getWindow(deskProfile(away), 'uct-board-a'))).toBe(before)
+    expect(store.count()).toBe(1) // nothing written under the new desk
+  })
+})
+
+function createPlacementFor(store: ReturnType<typeof createLayoutStore>, displays: DisplayInfo[]) {
+  return createPlacement({
+    store,
+    getDisplays: () => displays,
+    now: () => 1_000_000,
+    clock: { setTimeout: () => 0, clearTimeout: () => undefined },
+  })
+}
+
+describe('armed logic', () => {
+  it('a title-bar maximize before any drag is saved', () => {
+    const { placement, saved } = setup()
+    const w = fakeWin()
+    placement.onCreated(w, 'uct-board-a')
+    w.max = true
+    w.emit('maximize')
+    expect(saved.size).toBe(1)
+    expect([...saved.values()][0].isMaximized).toBe(true)
+  })
+  it('disarms after a save, so a later programmatic move is not stored', () => {
+    const { placement, saved } = setup()
+    const w = fakeWin()
+    placement.onCreated(w, 'uct-board-a')
+    w.emit('will-move')
+    w.b = { x: 300, y: 300, width: 700, height: 500 }
+    w.emit('moved')
+    const first = [...saved.values()][0]
+    w.b = { x: 999, y: 10, width: 700, height: 500 }
+    w.emit('moved') // not preceded by will-move
+    expect([...saved.values()][0]).toBe(first)
+  })
+  it('a maximize inside the quiet period after a screen event is not saved', () => {
+    const { placement, saved, advance } = setup()
+    const w = fakeWin()
+    placement.onCreated(w, 'uct-board-a')
+    placement.screenEvent()
+    advance(1000)
+    w.emit('maximize')
+    expect(saved.size).toBe(0)
+  })
+  it('records the monitor ordinal', () => {
+    const d = [disp(1, 0), disp(2, 1920)]
+    const { placement, saved } = setup(d)
+    const w = fakeWin({ x: 2000, y: 100, width: 700, height: 500 })
+    placement.onCreated(w, 'uct-board-a')
+    w.emit('will-move')
+    w.emit('moved')
+    expect([...saved.values()][0].display.ordinal).toBe(ordinalOf(d[1], d))
   })
 })
