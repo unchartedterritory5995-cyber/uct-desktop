@@ -9,7 +9,7 @@ await build({
   platform: 'node',
   format: 'cjs',
   target: 'node22',
-  external: ['electron'],
+  external: ['electron', 'koffi'],
   sourcemap: true,
   define: { __BUILD_KIND__: JSON.stringify(kind) },
 })

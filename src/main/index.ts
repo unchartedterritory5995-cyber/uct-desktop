@@ -2,6 +2,7 @@ import { app, BrowserWindow, session } from 'electron'
 import { APP_USER_MODEL_ID, ORIGIN, PARTITION } from './config'
 import { installPolicy } from './policy/install'
 import { createMainWindow } from './windows/main-window'
+import { followSiteTheme, installThemedTitleBars } from './windows/titlebar'
 
 app.setAppUserModelId(APP_USER_MODEL_ID)
 
@@ -17,9 +18,11 @@ if (!app.requestSingleInstanceLock()) {
   })
   app.on('window-all-closed', () => app.quit())
   void app.whenReady().then(() => {
+    installThemedTitleBars()
     let mainContentsId = -1
     installPolicy(session.fromPartition(PARTITION), ORIGIN, (c) => c.id === mainContentsId)
     main = createMainWindow()
     mainContentsId = main.webContents.id
+    followSiteTheme(main.webContents)
   })
 }
