@@ -1,4 +1,5 @@
 import { BrowserWindow } from 'electron'
+import { join } from 'node:path'
 import { ORIGIN, PARTITION } from '../config'
 
 const ERR_ABORTED = -3
@@ -13,6 +14,9 @@ export function createMainWindow(): BrowserWindow {
     backgroundColor: '#0b0d10',
     webPreferences: {
       partition: PARTITION,
+      // The bridge preload belongs to the main window only; popups never rely on it.
+      preload: join(__dirname, '../preload/index.js'),
+      additionalArguments: [`--uct-origin=${ORIGIN}`],
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,

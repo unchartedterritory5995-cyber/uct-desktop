@@ -1,4 +1,5 @@
-import { app, BrowserWindow, session } from 'electron'
+import { app, BrowserWindow, ipcMain, session } from 'electron'
+import { registerBridgeHandlers } from './bridge/handlers'
 import { APP_USER_MODEL_ID, ORIGIN, PARTITION } from './config'
 import { installPolicy } from './policy/install'
 import { createMainWindow } from './windows/main-window'
@@ -21,6 +22,11 @@ if (!app.requestSingleInstanceLock()) {
     installThemedTitleBars()
     let mainContentsId = -1
     installPolicy(session.fromPartition(PARTITION), ORIGIN, (c) => c.id === mainContentsId)
+    registerBridgeHandlers(ipcMain, {
+      origin: ORIGIN,
+      getInfo: () => ({ appVersion: app.getVersion(), platform: process.platform }),
+      onAckBeforeQuit: () => undefined, // the quit sequence is Task 18
+    })
     main = createMainWindow()
     mainContentsId = main.webContents.id
     followSiteTheme(main.webContents)
