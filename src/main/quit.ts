@@ -20,6 +20,12 @@ export interface QuitController {
   ack(): void
   /** autoUpdater's before-quit-for-update: notify, but never hold the quit back. */
   beforeQuitForUpdate(): void
+  /**
+   * The page cancelled the close through beforeunload (will-prevent-unload). Returns true when the
+   * caller must preventDefault so the page unloads anyway. Updates and session-end always leave;
+   * a member-initiated close asks `confirmLeave`, and Stay resets the quit so a later X works.
+   */
+  handleUnloadPrevented(confirmLeave: () => boolean): boolean
   /** True once a close/quit may go straight through (quit finished, or an update is installing). */
   allowClose(): boolean
 }
@@ -28,6 +34,7 @@ export function createQuitController(deps: QuitDeps): QuitController {
   const waitMs = deps.waitMs ?? QUIT_WAIT_MS
   let phase: 'idle' | 'waiting' | 'done' = 'idle'
   let updating = false
+  let forced = false // session-end: nothing may stop or ask
   let notified = false
   let timer: unknown
   let hasTimer = false
@@ -47,9 +54,12 @@ export function createQuitController(deps: QuitDeps): QuitController {
 
   return {
     requestQuit(reason) {
+      // Windows is ending the session: there is no time to wait, even mid-wait. Checked first.
+      if (reason === 'session-end') {
+        forced = true
+        return finish()
+      }
       if (phase !== 'idle') return
-      // Windows is ending the session: there is no time to wait.
-      if (reason === 'session-end') return finish()
       phase = 'waiting'
       notify()
       hasTimer = true
@@ -64,6 +74,17 @@ export function createQuitController(deps: QuitDeps): QuitController {
     beforeQuitForUpdate() {
       updating = true
       notify()
+    },
+    handleUnloadPrevented(confirmLeave) {
+      if (updating || forced) return true
+      if (phase === 'idle') return false // not a quit: leave the page's own guard alone
+      if (confirmLeave()) return true
+      // Stay: forget this quit so the next X starts a fresh one (and tells the site again).
+      if (hasTimer) deps.clock.clearTimeout(timer)
+      hasTimer = false
+      phase = 'idle'
+      notified = false
+      return false
     },
     allowClose: () => phase === 'done' || updating,
   }

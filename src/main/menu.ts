@@ -10,7 +10,7 @@ export interface MenuActions {
 // Zoom is owned by windows/zoom.ts, so no zoom roles appear here.
 export function buildMenuTemplate(a: MenuActions): MenuItemConstructorOptions[] {
   return [
-    { label: 'File', submenu: [{ label: 'Quit', accelerator: 'Alt+F4', click: a.onQuit }] },
+    { label: 'File', submenu: [{ label: 'Quit', click: a.onQuit }] },
     {
       label: 'Edit',
       submenu: [
@@ -36,7 +36,31 @@ export function buildMenuTemplate(a: MenuActions): MenuItemConstructorOptions[] 
 }
 
 /** Storage cleared by "Reset app data". Cookies (the sign-in) are a separate choice. */
-export function resetStorages(includeCookies: boolean): string[] {
-  const storages = ['localstorage', 'indexdb', 'cachestorage', 'serviceworkers', 'filesystem', 'websql', 'shadercache']
+export type StorageName = 'cookies' | 'filesystem' | 'indexdb' | 'localstorage' | 'shadercache' | 'serviceworkers' | 'cachestorage'
+
+export function resetStorages(includeCookies: boolean): StorageName[] {
+  const storages: StorageName[] = ['localstorage', 'indexdb', 'cachestorage', 'serviceworkers', 'filesystem', 'shadercache']
   return includeCookies ? [...storages, 'cookies'] : storages
+}
+
+export interface ResetSteps {
+  destroyChildren(): void
+  /** Load the neutral shell page in the main window, so the site's unload handlers run first. */
+  showShell(): Promise<void> | void
+  clearStorage(includeCookies: boolean): Promise<void>
+  loadSite(): void
+}
+
+/**
+ * Order matters: popups first (a closing board must not rewrite records), the shell page next (the
+ * site's beforeunload flush runs now, before the wipe), then the wipe, then the site again.
+ */
+export async function performReset(steps: ResetSteps, includeCookies: boolean): Promise<void> {
+  try {
+    steps.destroyChildren()
+    await steps.showShell()
+    await steps.clearStorage(includeCookies)
+  } finally {
+    steps.loadSite()
+  }
 }

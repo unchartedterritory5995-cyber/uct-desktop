@@ -1,6 +1,7 @@
 const kind = new URLSearchParams(location.search).get('k')
 const text = {
   'network-error': ['You appear to be offline', 'Check your connection. We keep trying and will reopen the app when it is back.'],
+  reset: ['Resetting app data', 'One moment. The app reopens by itself.'],
   crash: ['UCT Intelligence stopped unexpectedly', 'Select Try again to reopen it.'],
   'origin-error': ['UCT Intelligence is not answering', 'The site is having trouble. We keep trying and will reopen the app when it is back.'],
 }[kind]

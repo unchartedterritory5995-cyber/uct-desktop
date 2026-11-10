@@ -6,12 +6,12 @@ import { createLoadGuard, type LoadGuard } from '../load-guard'
 import { CHANNELS, type WindowState } from '../../shared/contract'
 import { headerValue, makeRetryHandler, wireLoadEvents } from './wiring'
 
-export function showErrorPage(win: BrowserWindow, kind: 'origin-error' | 'network-error' | 'crash'): void {
-  if (win.isDestroyed()) return
+export function showErrorPage(win: BrowserWindow, kind: 'origin-error' | 'network-error' | 'crash' | 'reset'): Promise<void> {
+  if (win.isDestroyed()) return Promise.resolve()
   // Show the window first: a failed load never reaches ready-to-show, and an offline start must
   // not be an invisible process holding the single-instance lock.
   if (!win.isVisible()) win.show()
-  void win.loadURL(`${APP_SHELL_ORIGIN}/error.html?k=${kind}`).catch(() => undefined)
+  return win.loadURL(`${APP_SHELL_ORIGIN}/error.html?k=${kind}`).catch(() => undefined)
 }
 
 function windowState(win: BrowserWindow): WindowState {

@@ -3,7 +3,7 @@ import { installShellProtocol, registerShellScheme } from './app-shell-protocol'
 import { registerBridgeHandlers } from './bridge/handlers'
 import { APP_USER_MODEL_ID, ORIGIN, PARTITION } from './config'
 import { buildDiagnostics } from './diagnostics'
-import { buildMenuTemplate, resetStorages } from './menu'
+import { buildMenuTemplate, performReset, resetStorages } from './menu'
 import { installPolicy } from './policy/install'
 import { createQuitController, focusExistingWindow } from './quit'
 import { createRecovery, type RecoverableWindow } from './recovery'
@@ -50,12 +50,28 @@ if (!app.requestSingleInstanceLock()) {
       onAckBeforeQuit: () => quit.ack(),
     })
     installShellProtocol(session.fromPartition(PARTITION))
-    const win = createMainWindow().win
+    const created = createMainWindow()
+    const win = created.win
+    let resetting = false
     main = win
     win.on('close', (event) => {
       if (quit.allowClose()) return
       event.preventDefault()
       quit.requestQuit('quit')
+    })
+    // A page-level beforeunload guard (unsaved text) can cancel a quit and would repeat on every X.
+    win.webContents.on('will-prevent-unload', (event) => {
+      const leave = quit.handleUnloadPrevented(
+        () =>
+          dialog.showMessageBoxSync(win, {
+            type: 'question',
+            message: 'You have unsaved text. Leave anyway?',
+            buttons: ['Leave', 'Stay'],
+            defaultId: 1,
+            cancelId: 1,
+          }) === 0,
+      )
+      if (leave || resetting) event.preventDefault() // preventDefault lets the unload go ahead
     })
     win.on('session-end', () => quit.requestQuit('session-end'))
 
@@ -96,9 +112,23 @@ if (!app.requestSingleInstanceLock()) {
               })
               .then(async ({ response, checkboxChecked }) => {
                 if (response !== 1) return
-                await ses.clearStorageData({ storages: resetStorages(checkboxChecked) as never })
-                await ses.clearCache()
-                if (!win.isDestroyed()) win.webContents.reload()
+                resetting = true
+                try {
+                  await performReset(
+                    {
+                      destroyChildren: () => BrowserWindow.getAllWindows().filter((w) => w !== win).forEach((w) => w.destroy()),
+                      showShell: () => showErrorPage(win, 'reset'),
+                      clearStorage: async (cookies) => {
+                        await ses.clearStorageData({ storages: resetStorages(cookies) })
+                        await ses.clearCache()
+                      },
+                      loadSite: () => created.guard.retry(),
+                    },
+                    checkboxChecked,
+                  )
+                } finally {
+                  resetting = false
+                }
               })
           },
         }),
