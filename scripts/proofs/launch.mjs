@@ -68,7 +68,7 @@ export async function startApp(target, port) {
     target === 'electron'
       ? process.env.UCT_PROOF_EXE || resolve('release', 'win-unpacked', 'UCT Intelligence.exe')
       : 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-  const args = [`--user-data-dir=${profile}`, `--remote-debugging-port=${port}`]
+  const args = [...(process.env.UCT_PROOF_APP ? [process.env.UCT_PROOF_APP] : []), `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`]
   if (target === 'chrome') args.push(`--app=${BASE}/`, '--window-size=1500,950', '--no-first-run', '--no-default-browser-check')
   const child = spawn(exe, args, { stdio: 'ignore' })
   let exit = null

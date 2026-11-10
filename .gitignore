@@ -6,3 +6,4 @@ release-share/
 .env
 .env.*
 proof-output/
+.claude/
