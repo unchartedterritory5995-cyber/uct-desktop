@@ -1,9 +1,10 @@
-import { app, BrowserWindow, ipcMain, session } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, session } from 'electron'
 import { installShellProtocol, registerShellScheme } from './app-shell-protocol'
 import { registerBridgeHandlers } from './bridge/handlers'
 import { APP_USER_MODEL_ID, ORIGIN, PARTITION } from './config'
 import { installPolicy } from './policy/install'
-import { createMainWindow } from './windows/main-window'
+import { createRecovery, type RecoverableWindow } from './recovery'
+import { createMainWindow, showErrorPage } from './windows/main-window'
 import { followSiteTheme, installThemedTitleBars } from './windows/titlebar'
 
 app.setAppUserModelId(APP_USER_MODEL_ID)
@@ -30,7 +31,15 @@ if (!app.requestSingleInstanceLock()) {
       onAckBeforeQuit: () => undefined, // the quit sequence is Task 18
     })
     installShellProtocol(session.fromPartition(PARTITION))
-    main = createMainWindow().win
+    const win = createMainWindow().win
+    main = win
+    createRecovery({
+      win: win as unknown as RecoverableWindow,
+      now: () => Date.now(),
+      dialog: { showMessageBox: (o) => dialog.showMessageBox(win, o) },
+      clock: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout) },
+      showError: (k) => showErrorPage(win, k),
+    })
     mainContentsId = main.webContents.id
     followSiteTheme(main.webContents)
   })
