@@ -53,10 +53,11 @@ describe('quit controller', () => {
     q.ack()
     expect(log).toEqual([])
   })
-  it('session-end closes immediately without waiting or notifying', () => {
-    const { q, log } = make()
+  it('session-end notifies the site first, then closes immediately without waiting', () => {
+    const { q, log, pending } = make()
     q.requestQuit('session-end')
-    expect(log).toEqual(['final'])
+    expect(log).toEqual(['send', 'final'])
+    expect(pending()).toBe(0)
     expect(q.allowClose()).toBe(true)
   })
   it('before-quit-for-update notifies once and never blocks a close', () => {
@@ -67,6 +68,29 @@ describe('quit controller', () => {
     expect(log).toEqual(['send'])
     advance(5000)
     expect(log).toEqual(['send']) // the updater does the quitting; we never call finalize
+  })
+  it('prepareForUpdate sends, then resolves on ack or after 500 ms, and never blocks afterwards', async () => {
+    const a = make()
+    let done = false
+    void a.q.prepareForUpdate().then(() => (done = true))
+    expect(a.log).toEqual(['send'])
+    a.advance(QUIT_WAIT_MS - 1)
+    await Promise.resolve()
+    expect(done).toBe(false)
+    expect(a.q.allowClose()).toBe(false)
+    a.advance(1)
+    await Promise.resolve()
+    expect(done).toBe(true)
+    expect(a.q.allowClose()).toBe(true)
+    expect(a.log).toEqual(['send']) // the updater quits; finalize is never called
+    const b = make()
+    const p = b.q.prepareForUpdate()
+    b.q.ack()
+    await p
+    expect(b.q.allowClose()).toBe(true)
+    expect(b.pending()).toBe(0)
+    await b.q.prepareForUpdate() // already ready: resolves at once
+    expect(b.log).toEqual(['send'])
   })
   it('does not notify twice when an update follows a quit request', () => {
     const { q, log } = make()
