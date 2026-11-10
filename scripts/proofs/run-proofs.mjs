@@ -47,6 +47,17 @@ async function row(name, fn) {
   }
 }
 
+// The window's own contents are the title bar. The site is the page on the app's origin.
+async function sitePage(electronApp) {
+  const deadline = Date.now() + 60000
+  while (Date.now() < deadline) {
+    const hit = electronApp.windows().find((p) => p.url().startsWith(BASE))
+    if (hit) return hit
+    await sleep(250)
+  }
+  throw new Error('site page did not appear')
+}
+
 const profile = mkdtempSync(join(tmpdir(), `uct-proof-${target}-`))
 let app, browser, page
 
@@ -56,7 +67,7 @@ if (target === 'electron') {
     args: [`--user-data-dir=${profile}`, ...(scale ? [`--force-device-scale-factor=${scale}`] : [])],
     timeout: 60000,
   })
-  page = await app.firstWindow({ timeout: 60000 })
+  page = await sitePage(app)
 } else {
   browser = await chromium.launchPersistentContext(profile, {
     channel: 'chrome',
@@ -333,7 +344,7 @@ if (target === 'electron') {
       args: [`--user-data-dir=${profile}`],
       timeout: 60000,
     })
-    page = await app.firstWindow({ timeout: 60000 })
+    page = await sitePage(app)
     await page.waitForLoadState('domcontentloaded', { timeout: 60000 })
     await charts()
     const restore = page.getByRole('button', { name: 'Restore', exact: true })
