@@ -15,7 +15,7 @@ export function parseWindowName(name: string): { kind: 'board' | 'widget'; id: s
 
 export interface StoreFs {
   readFile(path: string): string
-  writeFile(path: string, data: string): void
+  writeFile(path: string, data: string, options?: { flush?: boolean }): void
   rename(from: string, to: string): void
   mkdir(dir: string): void
 }
@@ -30,6 +30,7 @@ function cleanRecord(r: unknown): WindowRecord | null {
   if (!r || typeof r !== 'object') return null
   const o = r as WindowRecord
   const d = o.display
+  const ordinal = num(d?.ordinal) ? d.ordinal : undefined
   if (!isRect(o.bounds) || !d || typeof d.fingerprint !== 'string' || !d.origin || !num(d.origin.x) || !num(d.origin.y) || !num(d.scaleFactor)) return null
   if (typeof o.isMaximized !== 'boolean' || typeof o.isFullScreen !== 'boolean' || !num(o.savedAt)) return null
   const { x, y, width, height } = o.bounds
@@ -37,7 +38,12 @@ function cleanRecord(r: unknown): WindowRecord | null {
     bounds: { x, y, width, height },
     isMaximized: o.isMaximized,
     isFullScreen: o.isFullScreen,
-    display: { fingerprint: d.fingerprint, origin: { x: d.origin.x, y: d.origin.y }, scaleFactor: d.scaleFactor },
+    display: {
+      fingerprint: d.fingerprint,
+      origin: { x: d.origin.x, y: d.origin.y },
+      scaleFactor: d.scaleFactor,
+      ...(ordinal !== undefined && { ordinal }),
+    },
     savedAt: o.savedAt,
   }
 }
@@ -45,6 +51,8 @@ function cleanRecord(r: unknown): WindowRecord | null {
 export interface LayoutStore {
   saveWindow(profile: string, name: string, record: WindowRecord): void
   getWindow(profile: string, name: string): WindowRecord | undefined
+  /** The most recently saved record for this name in ANY desk profile. Read-only. */
+  findNewest(name: string): WindowRecord | undefined
   count(): number
 }
 
@@ -83,11 +91,17 @@ export function createLayoutStore(deps: { file: string; fs: StoreFs }): LayoutSt
 
   const count = (): number => Object.values(profiles).reduce((n, w) => n + Object.keys(w).length, 0)
 
+  // A failed write keeps the in-memory state; the next save writes everything again. It must never
+  // surface as an uncaught exception in the main process.
   const flush = (): void => {
-    const tmp = `${file}.tmp`
-    fs.mkdir(file.replace(/[\\/][^\\/]*$/, ''))
-    fs.writeFile(tmp, JSON.stringify({ version: VERSION, profiles }))
-    fs.rename(tmp, file)
+    try {
+      const tmp = `${file}.tmp`
+      fs.mkdir(file.replace(/[\\/][^\\/]*$/, ''))
+      fs.writeFile(tmp, JSON.stringify({ version: VERSION, profiles }), { flush: true })
+      fs.rename(tmp, file)
+    } catch {
+      /* retried on the next save */
+    }
   }
 
   return {
@@ -106,6 +120,14 @@ export function createLayoutStore(deps: { file: string; fs: StoreFs }): LayoutSt
       flush()
     },
     getWindow: (profile, name) => profiles[profile]?.[name],
+    findNewest(name) {
+      let best: WindowRecord | undefined
+      for (const w of Object.values(profiles)) {
+        const r = w[name]
+        if (r && (!best || r.savedAt > best.savedAt)) best = r
+      }
+      return best
+    },
     count,
   }
 }

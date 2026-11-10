@@ -22,13 +22,29 @@ export interface WindowRecord {
   bounds: Rect
   isMaximized: boolean
   isFullScreen: boolean
-  display: { fingerprint: string; origin: { x: number; y: number }; scaleFactor: number }
+  display: {
+    fingerprint: string
+    origin: { x: number; y: number }
+    scaleFactor: number
+    /** Left-to-right rank among displays with the same fingerprint; survives a primary swap. */
+    ordinal?: number
+  }
   savedAt: number
 }
 
 /** What a monitor IS (size, scale, kind, model), not where it sits or its volatile id. */
 export function fingerprintDisplay(d: DisplayInfo): string {
   return [d.bounds.width, d.bounds.height, d.scaleFactor, d.internal ? 'int' : 'ext', d.label ?? ''].join('|')
+}
+
+function byPosition(a: DisplayInfo, b: DisplayInfo): number {
+  return a.bounds.x - b.bounds.x || a.bounds.y - b.bounds.y
+}
+
+/** Left-to-right rank of `d` among the displays that share its fingerprint. */
+export function ordinalOf(d: DisplayInfo, displays: readonly DisplayInfo[]): number {
+  const fp = fingerprintDisplay(d)
+  return displays.filter((x) => fingerprintDisplay(x) === fp).sort(byPosition).findIndex((x) => x.id === d.id)
 }
 
 /** The desk: the set of monitors, in any order. */
@@ -59,12 +75,21 @@ export function resolveBounds(saved: WindowRecord, displays: readonly DisplayInf
   if (displays.length === 0) return { ...saved.bounds }
   const same = displays.filter((d) => fingerprintDisplay(d) === saved.display.fingerprint)
   if (same.length > 0) {
-    // Identical monitors are told apart by arrangement: take the one nearest the saved origin, and
-    // carry the window along if that monitor has moved.
+    // Identical monitors are told apart by their left-to-right ordinal (a primary swap moves the
+    // origins but not the order); the saved origin only breaks ties. The window is carried along
+    // if that monitor has moved.
     const o = saved.display.origin
-    const target = same.reduce((best, d) =>
-      Math.hypot(d.bounds.x - o.x, d.bounds.y - o.y) < Math.hypot(best.bounds.x - o.x, best.bounds.y - o.y) ? d : best,
-    )
+    const want = saved.display.ordinal
+    const sorted = [...same].sort(byPosition)
+    const score = (d: DisplayInfo): [number, number] => [
+      want === undefined ? 0 : Math.abs(sorted.indexOf(d) - want),
+      Math.hypot(d.bounds.x - o.x, d.bounds.y - o.y),
+    ]
+    const target = sorted.reduce((best, d) => {
+      const a = score(d)
+      const b = score(best)
+      return a[0] < b[0] || (a[0] === b[0] && a[1] < b[1]) ? d : best
+    })
     const moved = { ...saved.bounds, x: saved.bounds.x + (target.bounds.x - o.x), y: saved.bounds.y + (target.bounds.y - o.y) }
     return clampInto(moved, target.workArea)
   }

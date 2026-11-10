@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { deskProfile, fingerprintDisplay, resolveBounds, type DisplayInfo, type WindowRecord } from '../src/main/windows/display'
+import { deskProfile, fingerprintDisplay, ordinalOf, resolveBounds, type DisplayInfo, type WindowRecord } from '../src/main/windows/display'
 
 const disp = (id: number, x: number, y: number, w = 1920, h = 1080, scale = 1, taskbar = 40): DisplayInfo => ({
   id,
@@ -37,6 +37,26 @@ describe('fingerprintDisplay / deskProfile', () => {
     expect(deskProfile([a, b])).toBe(deskProfile([b, a]))
     expect(deskProfile([a, b])).not.toBe(deskProfile([a]))
     expect(deskProfile([a])).toMatch(/^[0-9a-f]{16}$/)
+  })
+})
+
+describe('identical monitors after a primary swap', () => {
+  it('ranks same-fingerprint displays left to right', () => {
+    const a = disp(1, 0, 0)
+    const b = disp(2, -1920, 0)
+    expect(ordinalOf(b, [a, b])).toBe(0)
+    expect(ordinalOf(a, [a, b])).toBe(1)
+  })
+  it('keeps the window on its monitor when the primary changes and origins shift', () => {
+    const left = disp(1, 0, 0) // primary, with the other monitor to its right
+    const right = disp(2, 1920, 0)
+    const saved = record(left, { x: 100, y: 100, width: 800, height: 600 })
+    saved.display.ordinal = ordinalOf(left, [left, right]) // 0
+    // The member makes the right monitor primary: it is now at 0, the old primary at -1920.
+    const swappedLeft = disp(1, -1920, 0)
+    const swappedRight = disp(2, 0, 0)
+    // origin-only matching would pick the monitor now at (0,0), which is the OTHER monitor
+    expect(resolveBounds(saved, [swappedRight, swappedLeft])).toEqual({ x: -1820, y: 100, width: 800, height: 600 })
   })
 })
 

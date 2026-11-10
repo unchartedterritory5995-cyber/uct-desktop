@@ -5,20 +5,27 @@ import type { WindowRecord } from '../src/main/windows/display'
 function memFs(initial: Record<string, string> = {}) {
   const files = new Map(Object.entries(initial))
   const ops: string[] = []
+  const flags = { failWrite: false, failRename: false, writeOptions: [] as unknown[] }
   const fs: StoreFs = {
     readFile: (p) => {
       if (!files.has(p)) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' })
       return files.get(p)!
     },
-    writeFile: (p, d) => (ops.push(`write ${p}`), void files.set(p, d)),
+    writeFile: (p, d, o) => {
+      if (flags.failWrite) throw new Error('EBUSY')
+      ops.push(`write ${p}`)
+      flags.writeOptions.push(o)
+      files.set(p, d)
+    },
     rename: (a, b) => {
+      if (flags.failRename) throw new Error('EPERM')
       ops.push(`rename ${a} ${b}`)
       files.set(b, files.get(a)!)
       files.delete(a)
     },
     mkdir: () => void ops.push('mkdir'),
   }
-  return { fs, files, ops }
+  return { fs, files, ops, flags }
 }
 
 const rec = (n = 0, savedAt = 1): WindowRecord => ({
@@ -44,6 +51,45 @@ describe('layout store', () => {
     const { fs, ops } = memFs()
     createLayoutStore({ file: FILE, fs }).saveWindow('p', 'uct-widget-1', rec())
     expect(ops.filter((o) => o !== 'mkdir')).toEqual([`write ${FILE}.tmp`, `rename ${FILE}.tmp ${FILE}`])
+  })
+  it('flushes the temp file to disk before the rename', () => {
+    const { fs, flags } = memFs()
+    createLayoutStore({ file: FILE, fs }).saveWindow('p', 'uct-board-a', rec())
+    expect(flags.writeOptions).toEqual([{ flush: true }])
+  })
+  it('a failed write or rename never throws, keeps memory, and is retried by the next save', () => {
+    const { fs, files, flags } = memFs()
+    const s = createLayoutStore({ file: FILE, fs })
+    flags.failWrite = true
+    expect(() => s.saveWindow('p', 'uct-board-a', rec(1, 1))).not.toThrow()
+    expect(s.getWindow('p', 'uct-board-a')).toEqual(rec(1, 1))
+    expect(files.has(FILE)).toBe(false)
+    flags.failWrite = false
+    flags.failRename = true
+    expect(() => s.saveWindow('p', 'uct-board-b', rec(2, 2))).not.toThrow()
+    expect(files.has(FILE)).toBe(false)
+    flags.failRename = false
+    s.saveWindow('p', 'uct-board-c', rec(3, 3))
+    const onDisk = JSON.parse(files.get(FILE)!).profiles.p
+    expect(Object.keys(onDisk).sort()).toEqual(['uct-board-a', 'uct-board-b', 'uct-board-c'])
+  })
+  it('finds the newest record for a name across profiles without touching them', () => {
+    const { fs } = memFs()
+    const s = createLayoutStore({ file: FILE, fs })
+    s.saveWindow('old', 'uct-board-a', rec(1, 10))
+    s.saveWindow('new', 'uct-board-a', rec(2, 20))
+    s.saveWindow('old', 'uct-board-b', rec(3, 30))
+    expect(s.findNewest('uct-board-a')).toEqual(rec(2, 20))
+    expect(s.findNewest('uct-board-zzz')).toBeUndefined()
+    expect(s.count()).toBe(3)
+  })
+  it('keeps the display ordinal', () => {
+    const { fs } = memFs()
+    const s = createLayoutStore({ file: FILE, fs })
+    const r = rec()
+    r.display.ordinal = 1
+    s.saveWindow('p', 'uct-board-a', r)
+    expect(createLayoutStore({ file: FILE, fs }).getWindow('p', 'uct-board-a')?.display.ordinal).toBe(1)
   })
   it('treats a corrupt file as empty and keeps it as .bad', () => {
     const { fs, files } = memFs({ [FILE]: '{not json' })
