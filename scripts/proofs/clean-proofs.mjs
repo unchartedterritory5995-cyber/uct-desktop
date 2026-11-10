@@ -32,7 +32,7 @@ async function row(name, fn) {
   try {
     await fn()
   } catch (e) {
-    rec(name, 'INCONCLUSIVE', { error: String(e.message).split('\n')[0].slice(0, 200) })
+    rec(name, 'INCONCLUSIVE', { error: String(e.message).split('\n')[0].slice(0, 200), appExit: app?.exited?.() ?? null })
   }
 }
 

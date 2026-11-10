@@ -40,6 +40,7 @@ async function row(name, fn) {
   try {
     await fn()
   } catch (e) {
+    await page?.screenshot({ path: join(OUT, `fail-${name.replace(/\W+/g, '-')}.png`) }).catch(() => undefined)
     // A row that fails with a board popped must not strand the synthetic account's layout.
     if (lastPopup && !lastPopup.isClosed()) await lastPopup.close().catch(() => undefined)
     rec(name, 'INCONCLUSIVE', { error: `${e.name}: ${String(e.message).split('\n')[0].slice(0, 160)}` })
