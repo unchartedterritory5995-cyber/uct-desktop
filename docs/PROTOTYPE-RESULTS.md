@@ -39,3 +39,16 @@ Still open, and G1 holds until they close:
 The difference half is supported. The installed web app cannot reopen a board without a click, throttles a minimized main window to about a tenth of its timer rate, and needs a permission grant to place windows across monitors.
 
 The demand half has no data yet: paying member count, multi-monitor and pop-out usage, and the survey. Do not start Stage 3 until those are in and the owner decides.
+
+## Stage 3 checks, 2026-11-09 evening (version 0.1.2, website `d2a04368be`)
+
+The owner chose to start Stage 3 without the G2 demand data.
+
+| Check | Result |
+|---|---|
+| Launch restore on the real site (`restore-proof.mjs`) | PASS. After quit and relaunch with no click, the board reopened in 2.6 s at the saved position on another monitor, 0 px off, and all 5 widgets returned when it closed. The drag was simulated by the app, so a real mouse drag is still untested. |
+| Renderer crash with a window popped | PASS. The dead window closed and `/charts` returned in 1.1 s. |
+| Custom title bar | PASS for centered title, back arrow, theme colors, focus, maximize, full screen and close in 1.5 s. Mouse dragging and Windows snap layouts need a person. |
+| App-wide navigation on production | PASS, 37 nav entries on 20 routes. The rig's own smoke was INCONCLUSIVE because the rig is signed out. |
+| Microphone consent | Not verified on real hardware. |
+| Test account interference | Another job changed the shared test account's board during the evening, which caused one false FAIL and one timeout. |
