@@ -1,5 +1,6 @@
 import { app, dialog, shell, type DownloadItem, type Session, type WebContents } from 'electron'
 import { join } from 'node:path'
+import { installZoomKeys } from '../windows/zoom'
 import { classifyNavigation, classifyNewWindow } from './classify'
 import { safeDownloadName } from './downloads'
 import { isPermissionAllowed } from './permissions'
@@ -78,5 +79,8 @@ export function installPolicy(
       appOrigin,
     )
   })
-  app.on('web-contents-created', (_event, contents) => guardContents(contents, appOrigin))
+  app.on('web-contents-created', (_event, contents) => {
+    guardContents(contents, appOrigin)
+    installZoomKeys(contents)
+  })
 }
