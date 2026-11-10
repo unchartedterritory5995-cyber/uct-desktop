@@ -61,14 +61,14 @@ export function connect(url) {
   })
 }
 
-export async function startApp(target, port) {
+export async function startApp(target, port, extraArgs = []) {
   await refuseBusyPort(port)
   const profile = mkdtempSync(join(tmpdir(), `uct-clean-${target}-`))
   const exe =
     target === 'electron'
       ? process.env.UCT_PROOF_EXE || resolve('release', 'win-unpacked', 'UCT Intelligence.exe')
       : 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
-  const args = [...(process.env.UCT_PROOF_APP ? [process.env.UCT_PROOF_APP] : []), `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`]
+  const args = [...(process.env.UCT_PROOF_APP ? [process.env.UCT_PROOF_APP] : []), `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, ...extraArgs]
   if (target === 'chrome') args.push(`--app=${BASE}/`, '--window-size=1500,950', '--no-first-run', '--no-default-browser-check')
   const child = spawn(exe, args, { stdio: 'ignore' })
   let exit = null

@@ -84,7 +84,7 @@ const START = `(()=>{const m=window.__m={frames:[],long:0,longMs:0,last:performa
   const f=t=>{if(!m.on)return;m.frames.push(t-m.last);m.last=t;requestAnimationFrame(f)};requestAnimationFrame(f);return true})()`
 const STOP = `(()=>{const m=window.__m;m.on=false;window.__o.disconnect();const s=[...m.frames].sort((a,b)=>a-b);
   return {frames:s.length,p95:s.length>=${MIN_FRAMES}?Math.round(s[Math.floor(s.length*0.95)]):null,longTasks:m.long,longMs:Math.round(m.longMs),
-  canvases:document.querySelectorAll('canvas').length,hidden:document.hidden}})()`
+  canvases:document.querySelectorAll('canvas').length,hidden:document.hidden,x:screenX,y:screenY,w:outerWidth,h:outerHeight}})()`
 
 async function evalIn(session, expression) {
   const r = await session.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
@@ -109,7 +109,9 @@ try {
   const display = JSON.parse(readFileSync(join(OUT, 'displays.json'), 'utf8'))[displayIndex]
   if (!display) throw new Error(`no display ${displayIndex}`)
   if (display.w < COLUMNS * WIDTH || display.h < Math.ceil(12 / COLUMNS) * HEIGHT) throw new Error('chart windows do not fit that display')
-  app = await startApp(target, PORT)
+  // Applied equally to both apps: a window covered by something else on the monitor would
+  // otherwise report hidden and stop painting, which would measure the desktop, not the app.
+  app = await startApp(target, PORT, ['--disable-features=CalculateNativeWinOcclusion'])
   const { child, c, run, charts } = app
   await charts()
   await sleep(9000)
