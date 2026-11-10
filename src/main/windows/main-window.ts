@@ -4,8 +4,9 @@ import { ORIGIN, PARTITION } from '../config'
 import { APP_SHELL_ORIGIN, isShellSender } from '../app-shell'
 import { createLoadGuard, type LoadGuard } from '../load-guard'
 import { CHANNELS, type WindowState } from '../../shared/contract'
+import { headerValue, makeRetryHandler, wireLoadEvents } from './wiring'
 
-export function showErrorPage(win: BrowserWindow, kind: 'origin-error' | 'network-error'): void {
+export function showErrorPage(win: BrowserWindow, kind: 'origin-error' | 'network-error' | 'crash'): void {
   if (win.isDestroyed()) return
   // Show the window first: a failed load never reaches ready-to-show, and an offline start must
   // not be an invisible process holding the single-instance lock.
@@ -48,24 +49,26 @@ export function createMainWindow(): MainWindow {
   const guard = createLoadGuard({
     appOrigin: ORIGIN,
     clock: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout) },
-    load: () => {
-      if (!win.isDestroyed()) void win.loadURL(ORIGIN).catch(() => undefined)
+    load: (url) => {
+      if (!win.isDestroyed()) void win.loadURL(url).catch(() => undefined)
     },
     showError: (kind) => showErrorPage(win, kind),
     showApp: () => undefined, // the next successful navigation has already replaced the error page
   })
   const wc = win.webContents
-  wc.on('did-fail-load', (_e, code, _desc, url, isMainFrame) => {
-    if (isMainFrame) guard.onFailLoad(url, code)
+  // Cloudflare marks an interactive challenge with `cf-mitigated: challenge`; remember it per URL.
+  const challenges = new Map<string, string>()
+  wc.session.webRequest.onHeadersReceived((details, callback) => {
+    if (details.resourceType === 'mainFrame' && details.webContentsId === wc.id) {
+      const v = headerValue(details.responseHeaders, 'cf-mitigated')
+      if (v) challenges.set(details.url, v)
+      else challenges.delete(details.url)
+    }
+    callback({})
   })
-  wc.on('did-frame-navigate', (_e, url, httpResponseCode, _text, isMainFrame) => {
-    if (isMainFrame) guard.onNavigated(url, httpResponseCode)
-  })
+  wireLoadEvents(wc, guard, (url) => challenges.get(url))
   // `retry` is callable only from the error page, through its own sender check.
-  const onRetry = (event: { sender: unknown; senderFrame: Parameters<typeof isShellSender>[0]['senderFrame'] }): void => {
-    if (event.sender !== wc || !isShellSender(event)) return
-    guard.retry()
-  }
+  const onRetry = makeRetryHandler(wc, guard, isShellSender)
   ipcMain.on(CHANNELS.retry, onRetry)
 
   const sendState = (): void => {

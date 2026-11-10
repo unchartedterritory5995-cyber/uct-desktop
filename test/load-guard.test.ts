@@ -19,6 +19,12 @@ describe('classifyLoad', () => {
     expect(classifyLoad({ httpResponseCode: 503, contentType: 'application/json' })).toBe('origin-error')
     expect(classifyLoad({ httpResponseCode: 403, contentType: 'text/html; charset=UTF-8' })).toBe('origin-error')
   })
+  it('lets a Cloudflare interactive challenge render so the member can solve it', () => {
+    expect(classifyLoad({ httpResponseCode: 403, contentType: 'text/html', cfMitigated: 'challenge' })).toBe('ok')
+    expect(classifyLoad({ httpResponseCode: 403, contentType: 'text/html', cfMitigated: 'Challenge' })).toBe('ok')
+    expect(classifyLoad({ httpResponseCode: 403, contentType: 'text/html', cfMitigated: 'block' })).toBe('origin-error')
+    expect(classifyLoad({ httpResponseCode: 503, cfMitigated: 'challenge' })).toBe('origin-error')
+  })
   it('ignores an aborted load and reports a dead network', () => {
     expect(classifyLoad({ errorCode: ERR_ABORTED })).toBe('ignore')
     expect(classifyLoad({ errorCode: ERR_INTERNET_DISCONNECTED })).toBe('network-error')
@@ -85,14 +91,15 @@ function fakeClock() {
 function makeGuard() {
   const c = fakeClock()
   const log: string[] = []
+  const loaded: string[] = []
   const guard = createLoadGuard({
     appOrigin: O,
     clock: c.clock,
-    load: () => void log.push('load'),
+    load: (url) => (log.push('load'), void loaded.push(url)),
     showError: (k) => void log.push(`error:${k}`),
     showApp: () => void log.push('app'),
   })
-  return { ...c, log, guard }
+  return { ...c, log, guard, loaded }
 }
 
 describe('createLoadGuard', () => {
@@ -115,6 +122,33 @@ describe('createLoadGuard', () => {
     expect(b.log).toEqual(['load'])
     b.guard.onFailLoad(`${O}/`, ERR_INTERNET_DISCONNECTED)
     expect(b.log).toEqual(['load', 'error:network-error'])
+  })
+  it('treats a challenge response as a page, not an outage', () => {
+    const { guard, log } = makeGuard()
+    guard.start()
+    guard.onNavigated(`${O}/`, 403, 'text/html', 'challenge')
+    expect(log).toEqual(['load'])
+  })
+  it('retries the route that failed, never another origin', () => {
+    const { guard, advance, loaded } = makeGuard()
+    guard.start()
+    expect(loaded).toEqual([`${O}/`])
+    guard.onNavigated(`${O}/charts?x=1`, 502)
+    advance(2000)
+    expect(loaded.at(-1)).toBe(`${O}/charts?x=1`)
+    guard.onFailLoad('https://evil.example/x', -106)
+    guard.onNavigated(`${O}/charts?x=1`, 200, 'text/html')
+    guard.onNavigated(`${O}/journal`, 503)
+    advance(2000)
+    expect(loaded.at(-1)).toBe(`${O}/journal`)
+  })
+  it('falls back to the origin after a success', () => {
+    const { guard, loaded } = makeGuard()
+    guard.start()
+    guard.onNavigated(`${O}/charts`, 502)
+    guard.onNavigated(`${O}/charts`, 200, 'text/html')
+    guard.retry()
+    expect(loaded.at(-1)).toBe(`${O}/`)
   })
   it('ignores events about the app-shell page itself', () => {
     const { guard, log } = makeGuard()

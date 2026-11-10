@@ -33,13 +33,15 @@ if (!app.requestSingleInstanceLock()) {
     installShellProtocol(session.fromPartition(PARTITION))
     const win = createMainWindow().win
     main = win
-    createRecovery({
+    const recovery = createRecovery({
       win: win as unknown as RecoverableWindow,
       now: () => Date.now(),
       dialog: { showMessageBox: (o) => dialog.showMessageBox(win, o) },
       clock: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout) },
+      getChildren: () => BrowserWindow.getAllWindows().filter((w) => w !== win),
       showError: (k) => showErrorPage(win, k),
     })
+    win.once('closed', () => recovery.dispose())
     mainContentsId = main.webContents.id
     followSiteTheme(main.webContents)
   })

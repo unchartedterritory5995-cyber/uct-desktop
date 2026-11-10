@@ -27,19 +27,29 @@ function setup(startAt = MON_CLOSED, answers: number[] = []) {
     }
     t = end
   }
-  const wc = Object.assign(new EventEmitter(), { reloads: 0, reload() { this.reloads++ } })
+  // forcefullyCrashRenderer really does emit render-process-gone, so the fake does too.
+  const ee = new EventEmitter()
+  const wc = Object.assign(ee, {
+    reloads: 0,
+    forced: 0,
+    reload() { this.reloads++ },
+    forcefullyCrashRenderer() { this.forced++; ee.emit('render-process-gone', {}, { reason: 'killed' }) },
+  })
+  // Popups have no parent window, so getChildWindows() would find none of them: the fake
+  // window does not even offer it, and the children come from getChildren (all other windows).
   const children = [0, 1, 2].map(() => ({ destroyed: false, destroy() { this.destroyed = true }, isDestroyed() { return this.destroyed } }))
-  const win = { webContents: wc, isDestroyed: () => false, getChildWindows: () => children }
-  const asked: { buttons: string[]; defaultId?: number }[] = []
+  const win = { webContents: wc, isDestroyed: () => destroyedWin, getChildWindows: () => [] }
+  let destroyedWin = false
+  const asked: { buttons: string[]; defaultId?: number; signal?: AbortSignal }[] = []
   const dialog: DialogLike = {
     showMessageBox: async (o) => {
-      asked.push({ buttons: o.buttons, defaultId: o.defaultId })
+      asked.push({ buttons: o.buttons, defaultId: o.defaultId, signal: o.signal })
       return { response: answers.shift() ?? 0 }
     },
   }
   const errors: string[] = []
-  const rec = createRecovery({ win, now: () => t, dialog, clock, showError: (k) => void errors.push(k) })
-  return { rec, wc, children, advance, asked, errors, setNow: (n: number) => void (t = n) }
+  const rec = createRecovery({ win, now: () => t, dialog, clock, getChildren: () => children, showError: (k) => void errors.push(k) })
+  return { rec, wc, children, advance, asked, errors, setNow: (n: number) => void (t = n), destroyWin: () => void (destroyedWin = true) }
 }
 
 const gone = (wc: EventEmitter, reason = 'crashed') => wc.emit('render-process-gone', {}, { reason })
@@ -79,7 +89,24 @@ describe('render-process-gone', () => {
     expect(wc.reloads).toBe(3)
     gone(wc)
     expect(wc.reloads).toBe(3)
-    expect(errors).toEqual(['origin-error'])
+    expect(errors).toEqual(['crash'])
+  })
+  it('destroys children before the cap check, so a capped crash leaves no popups', () => {
+    const { wc, children, advance } = setup()
+    for (let i = 0; i < MAX_RELOADS; i++) {
+      gone(wc)
+      advance(1000)
+    }
+    for (const c of children) c.destroyed = false
+    gone(wc)
+    expect(wc.reloads).toBe(3)
+    expect(children.every((c) => c.destroyed)).toBe(true)
+  })
+  it('does nothing for a destroyed window', () => {
+    const { wc, destroyWin } = setup()
+    destroyWin()
+    gone(wc)
+    expect(wc.reloads).toBe(0)
   })
   it('forgets crashes older than 10 minutes', () => {
     const { wc, advance, errors } = setup()
@@ -117,8 +144,24 @@ describe('unresponsive', () => {
     wc.emit('unresponsive')
     advance(UNRESPONSIVE_MS)
     await flush()
-    expect(wc.reloads).toBe(1)
+    expect(wc.forced).toBe(1)
+    expect(wc.reloads).toBe(1) // the forced crash event must not trigger a second reload
     expect(children.every((c) => c.destroyed)).toBe(true)
+  })
+  it('aborts the dialog when the page recovers or crashes', async () => {
+    const a = setup(MON_CLOSED)
+    a.wc.emit('unresponsive')
+    a.advance(UNRESPONSIVE_MS)
+    await flush()
+    expect(a.asked[0].signal!.aborted).toBe(false)
+    a.wc.emit('responsive')
+    expect(a.asked[0].signal!.aborted).toBe(true)
+    const b = setup(MON_CLOSED)
+    b.wc.emit('unresponsive')
+    b.advance(UNRESPONSIVE_MS)
+    await flush()
+    gone(b.wc)
+    expect(b.asked[0].signal!.aborted).toBe(true)
   })
   it('Wait never reloads and asks again 20 seconds later if still stuck', async () => {
     const { wc, advance, asked } = setup(MON_CLOSED, [0, 0])

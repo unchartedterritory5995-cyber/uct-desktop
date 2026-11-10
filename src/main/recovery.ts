@@ -15,6 +15,7 @@ export interface DialogLike {
     buttons: string[]
     defaultId: number
     cancelId: number
+    signal?: AbortSignal
   }): Promise<{ response: number }>
 }
 
@@ -28,11 +29,11 @@ interface WebContentsLike {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   removeListener(event: string, listener: (...args: any[]) => void): unknown
   reload(): void
+  forcefullyCrashRenderer(): void
 }
 export interface RecoverableWindow {
   webContents: WebContentsLike
   isDestroyed(): boolean
-  getChildWindows(): ChildLike[]
 }
 
 export interface RecoveryDeps {
@@ -40,8 +41,10 @@ export interface RecoveryDeps {
   now(): number
   dialog: DialogLike
   clock: Clock
+  /** Every window except the main one: popups have no parent, so getChildWindows() cannot find them. */
+  getChildren(): ChildLike[]
   /** Show the app-shell error page (its Try again button reloads the site). */
-  showError(kind: 'origin-error'): void
+  showError(kind: 'crash'): void
 }
 
 const ET = new Intl.DateTimeFormat('en-US', {
@@ -68,18 +71,20 @@ export function createRecovery(deps: RecoveryDeps): { dispose(): void } {
   let hasHangTimer = false
   let hung = false
   let asking = false
+  let skipGone = false
+  let abort: AbortController | undefined
   let disposed = false
 
   const destroyChildren = (): void => {
-    for (const child of win.getChildWindows()) if (!child.isDestroyed()) child.destroy()
+    for (const child of deps.getChildren()) if (!child.isDestroyed()) child.destroy()
   }
 
   const reloadCapped = (): void => {
     const cutoff = deps.now() - RELOAD_WINDOW_MS
     reloads = reloads.filter((t) => t > cutoff)
-    if (reloads.length >= MAX_RELOADS) return deps.showError('origin-error')
+    destroyChildren() // before the cap check: a capped crash must not leave popups behind
+    if (reloads.length >= MAX_RELOADS) return deps.showError('crash')
     reloads.push(deps.now())
-    destroyChildren()
     wc.reload()
   }
 
@@ -100,6 +105,7 @@ export function createRecovery(deps: RecoveryDeps): { dispose(): void } {
   const ask = async (): Promise<void> => {
     if (disposed || !hung || asking || win.isDestroyed()) return
     asking = true
+    abort = new AbortController()
     try {
       // In market hours Wait is the default, so a stray Enter never costs the member their desk.
       const { response } = await deps.dialog.showMessageBox({
@@ -109,10 +115,14 @@ export function createRecovery(deps: RecoveryDeps): { dispose(): void } {
         buttons: ['Wait', 'Reload'],
         defaultId: isMarketHours(deps.now()) ? 0 : 1,
         cancelId: 0,
+        signal: abort.signal,
       })
-      if (disposed || !hung) return
+      if (disposed || !hung || abort.signal.aborted) return
       if (response === 1) {
         hung = false
+        // Reload exactly once: the forced crash raises render-process-gone, which is skipped.
+        skipGone = true
+        wc.forcefullyCrashRenderer()
         reloadCapped()
       } else armHang()
     } finally {
@@ -121,7 +131,13 @@ export function createRecovery(deps: RecoveryDeps): { dispose(): void } {
   }
 
   const onGone = (_event: unknown, details: { reason?: string }): void => {
-    if (disposed || details?.reason === 'clean-exit') return
+    if (disposed || win.isDestroyed()) return
+    abort?.abort()
+    if (skipGone) {
+      skipGone = false
+      return
+    }
+    if (details?.reason === 'clean-exit') return
     hung = false
     clearHang()
     reloadCapped()
@@ -134,6 +150,7 @@ export function createRecovery(deps: RecoveryDeps): { dispose(): void } {
   const onResponsive = (): void => {
     hung = false
     clearHang()
+    abort?.abort()
   }
 
   wc.on('render-process-gone', onGone)
@@ -144,6 +161,7 @@ export function createRecovery(deps: RecoveryDeps): { dispose(): void } {
     dispose() {
       disposed = true
       clearHang()
+      abort?.abort()
       wc.removeListener('render-process-gone', onGone)
       wc.removeListener('unresponsive', onUnresponsive)
       wc.removeListener('responsive', onResponsive)
