@@ -2,6 +2,7 @@
 // rule is unit-tested without Electron. Nothing here ever kills a renderer on its own: a crashed
 // renderer is reloaded (it is already dead), a hung one only after the member picks Reload.
 import type { Clock } from './load-guard'
+import { isMarketHours } from './market-hours'
 
 export const MAX_RELOADS = 3
 export const RELOAD_WINDOW_MS = 10 * 60_000
@@ -49,21 +50,7 @@ export interface RecoveryDeps {
   showError(kind: 'crash'): void
 }
 
-const ET = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'America/New_York',
-  weekday: 'short',
-  hour: 'numeric',
-  minute: 'numeric',
-  hourCycle: 'h23',
-})
-
-/** 9:30-16:00 Eastern, Monday to Friday (D19). Holidays are not modelled: the safe error is "true". */
-export function isMarketHours(epochMs: number): boolean {
-  const parts = Object.fromEntries(ET.formatToParts(new Date(epochMs)).map((p) => [p.type, p.value]))
-  if (parts.weekday === 'Sat' || parts.weekday === 'Sun') return false
-  const minutes = Number(parts.hour) * 60 + Number(parts.minute)
-  return minutes >= 9 * 60 + 30 && minutes < 16 * 60
-}
+export { isMarketHours } from './market-hours'
 
 export function createRecovery(deps: RecoveryDeps): { dispose(): void } {
   const { win, clock } = deps

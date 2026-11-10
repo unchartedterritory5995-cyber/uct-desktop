@@ -94,13 +94,17 @@ async function evalIn(session, expression) {
 
 async function attachCharts(count) {
   const deadline = Date.now() + 90000
+  let last
   while (Date.now() < deadline) {
     const list = await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()
     const charts = list.filter((t) => t.type === 'page' && t.url.includes('popout='))
     if (charts.length === count) return charts
+    last = list
     await sleep(1000)
   }
-  throw new Error(`expected ${count} chart windows`)
+  // Say what each window became, so a failure is diagnosable: query strings dropped (they hold tokens).
+  const seen = (last || []).filter((t) => t.type === 'page').map((t) => t.url.split(/[?#]/)[0] + (t.url.includes('popout=') ? ' [popout]' : ''))
+  throw new Error(`expected ${count} chart windows, saw ${seen.length} pages: ${seen.join(', ')}`)
 }
 
 let exitCode = 0
