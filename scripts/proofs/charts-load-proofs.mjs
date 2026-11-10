@@ -22,7 +22,11 @@ const displayIndex = Number((process.argv.find((a) => a.startsWith('--display=')
 
 const OUT = 'proof-output'
 const PORT = target === 'electron' ? 9337 : 9338
-const STEPS = dry ? [2] : [4, 8, 12]
+// --profile=N: pop N widgets, then record a 20 s CPU profile of the page's renderer (every pop-out
+// runs there) plus Chromium's own counters, instead of the frame measurement.
+const profileArg = process.argv.find((a) => a.startsWith('--profile='))
+const PROFILE_N = profileArg ? Number(profileArg.split('=')[1]) : 0
+const STEPS = PROFILE_N ? [PROFILE_N] : dry ? [2] : [4, 8, 12]
 const SETTLE_MS = dry ? 20000 : 60000
 const MEASURE_MS = dry ? 20000 : 300000
 const SYMBOLS = ['NVDA', 'AAPL', 'MSFT', 'AMZN', 'META', 'GOOGL', 'TSLA', 'AMD', 'AVGO', 'SPY', 'QQQ', 'IWM']
@@ -146,6 +150,40 @@ const boardApi = (run) => ({
       body:JSON.stringify({version:${version},base_version:${base},board:'charts'})}).then(r=>r.status)`),
 })
 
+// CPU profile of the page's renderer: self time per function (file:line), plus Chromium's counters
+// (script, layout, style recalc, task time) over the same window. Answers "where does a frame go".
+async function profile(c) {
+  const metrics = async () => Object.fromEntries((await c.send('Performance.getMetrics')).metrics.map((m) => [m.name, m.value]))
+  await c.send('Performance.enable')
+  await c.send('Profiler.enable')
+  await c.send('Profiler.setSamplingInterval', { interval: 500 })
+  const m0 = await metrics()
+  await c.send('Profiler.start')
+  await sleep(20000)
+  const { profile: p } = await c.send('Profiler.stop')
+  const m1 = await metrics()
+  const byId = new Map(p.nodes.map((n) => [n.id, n]))
+  const self = new Map()
+  const dt = p.timeDeltas
+  for (let i = 0; i < p.samples.length; i++) {
+    const n = byId.get(p.samples[i])
+    const f = n.callFrame
+    const file = (f.url || '').split('/').pop().split('?')[0]
+    const key = `${f.functionName || '(anonymous)'} ${file}:${f.lineNumber + 1}`
+    self.set(key, (self.get(key) || 0) + (dt[i] || 0))
+  }
+  const totalUs = [...self.values()].reduce((a, b) => a + b, 0)
+  const top = [...self.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([k, us]) => ({ fn: k, ms: Math.round(us / 1000), pct: Math.round((us / totalUs) * 1000) / 10 }))
+  const d = (k) => Math.round(((m1[k] ?? 0) - (m0[k] ?? 0)) * 1000) / 1000
+  const summary = {
+    seconds: 20,
+    scriptS: d('ScriptDuration'), layoutS: d('LayoutDuration'), styleS: d('RecalcStyleDuration'), taskS: d('TaskDuration'),
+    layouts: d('LayoutCount'), styleRecalcs: d('RecalcStyleCount'),
+    idlePct: Math.round(((self.get('(idle) :0') || 0) / totalUs) * 1000) / 10,
+  }
+  return { summary, top }
+}
+
 let exitCode = 0
 let app
 let board
@@ -193,6 +231,12 @@ try {
       await evalIn(sessions[i], `(()=>{try{moveTo(${x},${y});resizeTo(${WIDTH},${HEIGHT})}catch{}return true})()`)
     }
     await sleep(SETTLE_MS)
+    if (PROFILE_N) {
+      results.profile = await profile(c)
+      save()
+      console.log(`[PROFILE] ${count} widgets: ${JSON.stringify(results.profile.summary)}`)
+      break
+    }
     for (const s of sessions) await evalIn(s, START)
     await evalIn(c, START)
     const before = processTree(child.pid)

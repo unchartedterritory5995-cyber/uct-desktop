@@ -4,7 +4,8 @@ Last updated 2026-11-10 by an agent session. Read this first after a restart.
 
 ## Plans (local, not in this repo)
 
-- Targets and phases: `C:\Users\Patrick\reports\UCT desktop app speed and reliability plan.md`
+- **THE PLAN (single authority):** `C:\Users\Patrick\reports\UCT desktop app FINAL plan - speed and reliability.md` (backup beside it)
+- History: `UCT desktop app speed and reliability plan.md`; Charts analysis log: `UCT desktop charts speed analysis.md`
 - Overall program: `C:\Users\Patrick\reports\UCT desktop app implementation plan v2.md`
 
 ## Owner decisions on 2026-11-10
