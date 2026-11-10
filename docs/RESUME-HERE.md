@@ -33,6 +33,14 @@ Last updated 2026-11-10 ~14:20 CT by an agent session. Read this first after a r
 | `src/main/index.ts`, `windows/main-window.ts`, `config.ts`, `diagnostics.ts`, `store-fs.ts` | Wiring and the independent review's fixes |
 | `scripts/proofs/charts-load-proofs.mjs` | Real-board load proof: `--dry`, `--quick=N --display=I`, `--profile=N` (CPU profile + redraw count); always restores the bench board |
 
+## Session 2026-11-10 afternoon/evening (newest)
+
+- **0.1.3 released to Bracco** (black box; tray off). `npm run check` green (256 tests, 8 mutants caught); `tray-proof.mjs` 6/6 on a dev build (control fails on production build, as it must); `blackbox-proof.mjs` 5/5 on the packaged app. Branch merged to `main`.
+- **Root cause of slow charts found by Chromium tracing** (`charts-load-proofs.mjs --trace`, `analyze-trace.py`): GPU process main thread 90% busy, 78% in Present, 549 presents/s, from two endless CSS animations (clock dot in every chart widget, voice orb breath). Killing them: 12 widgets p95 34 -> 17 ms, p99 84 -> 18 ms, CPU -63%. **Fixed and LIVE: website `d750e6bc9b`.** Per-board processes (E10) tested: no gain, double memory, dropped.
+- **Website branch `speed-5-anim` in `C:\Users\Patrick\uct-worktrees\speed-4`** (NOT yet on master, push was rejected by a race; rebase and push): `db9bc018e1` site-wide endless-animation rail + Model Book/Community finite; `66675d1cfc` Options Flow summary request bounded + rail covers inline styles; `01bed94be7` bars pack ingest one window at a time (Web Locks); plus uncommitted adaptive overlay loop (`components/chart/adaptiveFrameLoop.js` + StockChart wiring) pending its test run.
+- Census tests on master (swallowedFetch, jsonFetcher, persistence, symbolLink, formatters, dataGrid) already fail from other sessions' drift; not ours.
+- The intro film plays once a week per device (not every launch): no change needed.
+
 ## Next steps, in order
 
 1. `npm run check` on the branch (typecheck, vitest, build). Fix what fails.
