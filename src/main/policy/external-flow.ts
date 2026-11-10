@@ -3,7 +3,8 @@
 // system browser instead, where the member signs in. That keeps the desk alive. Paths come from the
 // website: billing is POST /api/auth/checkout|portal (Stripe URL) and connectors are
 // POST /api/j2/notes/connectors/{provider}/connect (provider URL), both followed by a top-level
-// navigation. Pure: hosts are compared exactly, never as substrings.
+// navigation. Settings deep-links with ?section=; the `connections` section holds Connected Apps
+// and Brokerage. Evernote's OAuth host is accounts.evernote.com. Pure: hosts are compared exactly, never as substrings.
 
 export const EXTERNAL_FLOW_NOTICE = 'Billing and connections open in your browser'
 
@@ -20,10 +21,11 @@ const CONNECTOR_HOSTS = new Set([
   'www.dropbox.com',
   'login.microsoftonline.com',
   'www.evernote.com',
+  'accounts.evernote.com',
   'evernote.com',
 ])
 
-const APP_PATH: Record<ExternalFlowKind, string> = { billing: '/settings', connector: '/journal' }
+const APP_PATH: Record<ExternalFlowKind, string> = { billing: '/settings', connector: '/settings?section=connections' }
 
 export function classifyExternalFlow(url: string, appOrigin: string): ExternalFlow | null {
   let target: URL

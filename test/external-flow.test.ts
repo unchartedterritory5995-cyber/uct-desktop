@@ -9,14 +9,15 @@ describe('classifyExternalFlow', () => {
       expect(classifyExternalFlow(u, O)).toEqual({ kind: 'billing', openUrl: `${O}/settings` })
     }
   })
-  it('sends connector sign-ins to the app notebook page in the browser', () => {
+  it('sends connector sign-ins to the Connected Apps section in the browser', () => {
     for (const u of [
       'https://api.notion.com/v1/oauth/authorize?client_id=x',
       'https://www.dropbox.com/oauth2/authorize?x=1',
       'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
       'https://www.evernote.com/OAuth.action',
+      'https://accounts.evernote.com/oauth?x=1',
     ]) {
-      expect(classifyExternalFlow(u, O)).toEqual({ kind: 'connector', openUrl: `${O}/journal` })
+      expect(classifyExternalFlow(u, O)).toEqual({ kind: 'connector', openUrl: `${O}/settings?section=connections` })
     }
   })
   it('leaves ordinary external links alone', () => {
