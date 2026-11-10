@@ -9,7 +9,7 @@ import { createQuitController, focusExistingWindow } from './quit'
 import { createRecovery, type RecoverableWindow } from './recovery'
 import { CHANNELS } from '../shared/contract'
 import { createElectronPlacement } from './windows/placement-electron'
-import { createMainWindow, showErrorPage } from './windows/main-window'
+import { createMainWindow } from './windows/main-window'
 import { followSiteTheme, installThemedTitleBars } from './windows/titlebar'
 
 app.setAppUserModelId(APP_USER_MODEL_ID)
@@ -19,13 +19,14 @@ if (!app.requestSingleInstanceLock()) {
   app.quit()
 } else {
   let main: BrowserWindow | undefined
+  let siteContents: Electron.WebContents | undefined
   const clock = { setTimeout: (fn: () => void, ms: number) => setTimeout(fn, ms), clearTimeout: (h: unknown) => clearTimeout(h as NodeJS.Timeout) }
 
   // Close means quit. The website hears onBeforeQuit and has 500 ms to ack before we close.
   const quit = createQuitController({
     clock,
     sendBeforeQuit: () => {
-      if (main && !main.isDestroyed()) main.webContents.send(CHANNELS.beforeQuit)
+      if (siteContents && !siteContents.isDestroyed()) siteContents.send(CHANNELS.beforeQuit)
     },
     finalize: () => app.quit(),
   })
@@ -42,8 +43,15 @@ if (!app.requestSingleInstanceLock()) {
 
   void app.whenReady().then(() => {
     installThemedTitleBars()
-    let mainContentsId = -1
-    installPolicy(session.fromPartition(PARTITION), ORIGIN, (c) => c.id === mainContentsId, createElectronPlacement())
+    let mainContentsId = -1 // the SITE contents: notifications and the bridge belong to it
+    let barContentsId = -1
+    installPolicy(
+      session.fromPartition(PARTITION),
+      ORIGIN,
+      (c) => c.id === mainContentsId,
+      createElectronPlacement(),
+      (c) => c.id === barContentsId,
+    )
     registerBridgeHandlers(ipcMain, {
       origin: ORIGIN,
       getInfo: () => ({ appVersion: app.getVersion(), platform: process.platform }),
@@ -52,15 +60,26 @@ if (!app.requestSingleInstanceLock()) {
     installShellProtocol(session.fromPartition(PARTITION))
     const created = createMainWindow()
     const win = created.win
+    siteContents = created.site
+    mainContentsId = created.site.id
+    barContentsId = created.bar.id
     let resetting = false
     main = win
     win.on('close', (event) => {
-      if (quit.allowClose()) return
-      event.preventDefault()
-      quit.requestQuit('quit')
+      if (!quit.allowClose()) {
+        event.preventDefault()
+        quit.requestQuit('quit')
+        return
+      }
+      // The site is a child view that closing the window does not unload: close it first.
+      if (!created.closer.isDone()) {
+        event.preventDefault()
+        created.closer.begin()
+      }
     })
     // A page-level beforeunload guard (unsaved text) can cancel a quit and would repeat on every X.
-    win.webContents.on('will-prevent-unload', (event) => {
+    created.site.on('will-prevent-unload', (event) => {
+      created.closer.promptShown()
       const leave = quit.handleUnloadPrevented(
         () =>
           dialog.showMessageBoxSync(win, {
@@ -72,6 +91,7 @@ if (!app.requestSingleInstanceLock()) {
           }) === 0,
       )
       if (leave || resetting) event.preventDefault() // preventDefault lets the unload go ahead
+      else created.closer.reset() // Stay: a later X must work again
     })
     win.on('session-end', () => quit.requestQuit('session-end'))
 
@@ -117,7 +137,7 @@ if (!app.requestSingleInstanceLock()) {
                   await performReset(
                     {
                       destroyChildren: () => BrowserWindow.getAllWindows().filter((w) => w !== win).forEach((w) => w.destroy()),
-                      showShell: () => showErrorPage(win, 'reset'),
+                      showShell: () => created.showError('reset'),
                       clearStorage: async (cookies) => {
                         await ses.clearStorageData({ storages: resetStorages(cookies) })
                         await ses.clearCache()
@@ -136,15 +156,14 @@ if (!app.requestSingleInstanceLock()) {
     )
 
     const recovery = createRecovery({
-      win: win as unknown as RecoverableWindow,
+      win: { webContents: created.site, isDestroyed: () => win.isDestroyed() || created.site.isDestroyed() } as unknown as RecoverableWindow,
       now: () => Date.now(),
       dialog: { showMessageBox: (o) => dialog.showMessageBox(win, o) },
       clock,
       getChildren: () => BrowserWindow.getAllWindows().filter((w) => w !== win),
-      showError: (k) => showErrorPage(win, k),
+      showError: (k) => void created.showError(k),
     })
     win.once('closed', () => recovery.dispose())
-    mainContentsId = main.webContents.id
-    followSiteTheme(main.webContents)
+    followSiteTheme(created.site)
   })
 }

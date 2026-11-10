@@ -18,6 +18,8 @@ export interface QuitDeps {
 export interface QuitController {
   requestQuit(reason: QuitReason): void
   ack(): void
+  /** Call before quitAndInstall: notify, then resolve on ack or after the wait. Nothing blocks after. */
+  prepareForUpdate(): Promise<void>
   /** autoUpdater's before-quit-for-update: notify, but never hold the quit back. */
   beforeQuitForUpdate(): void
   /**
@@ -36,6 +38,10 @@ export function createQuitController(deps: QuitDeps): QuitController {
   let updating = false
   let forced = false // session-end: nothing may stop or ask
   let notified = false
+  let updatePromise: Promise<void> | undefined
+  let updateDone: (() => void) | undefined
+  let updateTimer: unknown
+  let hasUpdateTimer = false
   let timer: unknown
   let hasTimer = false
 
@@ -57,6 +63,7 @@ export function createQuitController(deps: QuitDeps): QuitController {
       // Windows is ending the session: there is no time to wait, even mid-wait. Checked first.
       if (reason === 'session-end') {
         forced = true
+        notify() // so the site marks itself closing before any popup closes; no waiting
         return finish()
       }
       if (phase !== 'idle') return
@@ -70,6 +77,27 @@ export function createQuitController(deps: QuitDeps): QuitController {
     },
     ack() {
       if (phase === 'waiting') finish()
+      updateDone?.()
+    },
+    prepareForUpdate() {
+      if (updating) return Promise.resolve()
+      if (updatePromise) return updatePromise
+      notify()
+      updatePromise = new Promise<void>((resolve) => {
+        updateDone = () => {
+          if (hasUpdateTimer) deps.clock.clearTimeout(updateTimer)
+          hasUpdateTimer = false
+          updating = true // from here nothing may hold the updater back
+          updateDone = undefined
+          resolve()
+        }
+        hasUpdateTimer = true
+        updateTimer = deps.clock.setTimeout(() => {
+          hasUpdateTimer = false
+          updateDone?.()
+        }, waitMs)
+      })
+      return updatePromise
     },
     beforeQuitForUpdate() {
       updating = true

@@ -13,6 +13,8 @@ export const SHELL_FILES: Readonly<Record<string, ShellFile>> = Object.freeze(
   Object.assign(Object.create(null) as Record<string, ShellFile>, {
     'error.html': { file: 'error.html', type: 'text/html; charset=utf-8' },
     'error.js': { file: 'error.js', type: 'text/javascript; charset=utf-8' },
+    'bar.html': { file: 'bar.html', type: 'text/html; charset=utf-8' },
+    'bar.js': { file: 'bar.js', type: 'text/javascript; charset=utf-8' },
   }),
 )
 
@@ -35,10 +37,19 @@ export interface ShellSenderEvent {
   senderFrame: { url: string; parent: unknown | null } | null | undefined
 }
 
-/** The separate sender check for `retry`: only the top frame of the error page itself. */
-export function isShellSender(event: ShellSenderEvent): boolean {
+function isPageSender(event: ShellSenderEvent, pathname: string): boolean {
   const frame = event.senderFrame
   if (!frame || frame.parent !== null) return false
   const u = parse(frame.url)
-  return !!u && u.protocol === `${APP_SHELL_SCHEME}:` && u.host === 'shell' && u.pathname === '/error.html'
+  return !!u && u.protocol === `${APP_SHELL_SCHEME}:` && u.host === 'shell' && u.pathname === pathname
+}
+
+/** The separate sender check for `retry`: only the top frame of the error page itself. */
+export function isShellSender(event: ShellSenderEvent): boolean {
+  return isPageSender(event, '/error.html')
+}
+
+/** The sender check for the title bar's `back`: only the top frame of bar.html. */
+export function isBarSender(event: ShellSenderEvent): boolean {
+  return isPageSender(event, '/bar.html')
 }

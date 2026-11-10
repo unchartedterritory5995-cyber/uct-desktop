@@ -10,6 +10,7 @@ export const CHANNELS = {
   beforeQuit: 'uct:before-quit',
   ackBeforeQuit: 'uct:ack-before-quit',
   retry: 'uct:retry',
+  barBack: 'uct:bar-back',
 } as const
 
 export interface DesktopInfo {

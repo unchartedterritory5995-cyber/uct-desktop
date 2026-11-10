@@ -37,3 +37,9 @@ export function captionColors({ r, g, b }: Rgb): CaptionColors {
   const dark = 0.299 * r + 0.587 * g + 0.114 * b < DARK_BELOW
   return { caption: (b << 16) | (g << 8) | r, text: dark ? WHITE : BLACK, dark }
 }
+
+/** A Windows COLORREF (0x00BBGGRR) as a CSS #rrggbb color. */
+export function colorrefToCss(colorref: number): string {
+  const hex = (n: number): string => (n & 0xff).toString(16).padStart(2, '0')
+  return `#${hex(colorref)}${hex(colorref >> 8)}${hex(colorref >> 16)}`
+}

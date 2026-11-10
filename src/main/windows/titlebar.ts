@@ -36,6 +36,18 @@ function loadSetAttribute(): SetAttribute | null {
 
 let setAttribute: SetAttribute | null | undefined
 let current: CaptionColors = START_COLOR
+const listeners = new Set<(colors: CaptionColors) => void>()
+
+/** The colors the title bars currently wear. */
+export function currentCaptionColors(): CaptionColors {
+  return current
+}
+
+/** Called whenever the site's theme changes the bar colors. Returns an unsubscribe. */
+export function onThemeChange(listener: (colors: CaptionColors) => void): () => void {
+  listeners.add(listener)
+  return () => void listeners.delete(listener)
+}
 
 function paint(win: BrowserWindow): void {
   if (win.isDestroyed()) return
@@ -51,6 +63,7 @@ function apply(next: CaptionColors): void {
   current = next
   nativeTheme.themeSource = next.dark ? 'dark' : 'light'
   BrowserWindow.getAllWindows().forEach(paint)
+  listeners.forEach((listener) => listener(next))
 }
 
 /** Every window, popped-out ones included, gets the current colors as soon as it exists. */

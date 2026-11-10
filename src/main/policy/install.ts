@@ -1,6 +1,7 @@
 import { app, dialog, shell, type DownloadItem, type Session, type WebContents } from 'electron'
 import { join } from 'node:path'
 import type { Placement } from '../windows/placement'
+import { forceTitle, WINDOW_TITLE } from '../windows/chrome'
 import { installZoomKeys } from '../windows/zoom'
 import { classifyNavigation, classifyNewWindow } from './classify'
 import { safeDownloadName } from './downloads'
@@ -32,7 +33,12 @@ function guardContents(contents: WebContents, appOrigin: string, placement?: Pla
     if (isMainFrame) onNavigate(event, url)
   })
   contents.on('will-attach-webview', (event) => event.preventDefault())
-  contents.on('did-create-window', (child, details) => placement?.onCreated(child, details.frameName))
+  contents.on('did-create-window', (child, details) => {
+    // Popped windows keep the native bar, but its title is plain, left-aligned and the taskbar's too.
+    child.setTitle(WINDOW_TITLE)
+    child.on('page-title-updated', (event) => forceTitle(event, child))
+    placement?.onCreated(child, details.frameName)
+  })
 
   contents.setWindowOpenHandler(({ url, frameName, features }) => {
     // The origin, not getURL(): a popped-out portal is about:blank but carries the app's origin.
@@ -42,13 +48,14 @@ function guardContents(contents: WebContents, appOrigin: string, placement?: Pla
       // Portal windows: nothing here may override sandbox, and no preload is relied on.
       // Only uct-board-<id> / uct-widget-<id> get saved placement; any other name is unchanged.
       const placed = placement?.openOptions(frameName, features)
-      return { action: 'allow', overrideBrowserWindowOptions: { autoHideMenuBar: true, ...placed } }
+      return { action: 'allow', overrideBrowserWindowOptions: { autoHideMenuBar: true, title: WINDOW_TITLE, ...placed } }
     }
     if (verdict === 'app-child') {
       return {
         action: 'allow',
         overrideBrowserWindowOptions: {
           autoHideMenuBar: true,
+          title: WINDOW_TITLE,
           webPreferences: { backgroundThrottling: false },
         },
       }
@@ -74,6 +81,7 @@ export function installPolicy(
   appOrigin: string,
   isMainWindow: (contents: WebContents) => boolean,
   placement?: Placement,
+  isTitleBar: (contents: WebContents) => boolean = () => false,
 ): void {
   session.on('will-download', (_event, item) => guardDownload(item))
   session.setPermissionRequestHandler((contents, permission, callback, details) => {
@@ -95,6 +103,6 @@ export function installPolicy(
   })
   app.on('web-contents-created', (_event, contents) => {
     guardContents(contents, appOrigin, placement)
-    installZoomKeys(contents)
+    installZoomKeys(contents, () => !isTitleBar(contents))
   })
 }
