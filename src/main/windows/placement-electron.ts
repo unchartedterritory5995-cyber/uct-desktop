@@ -1,6 +1,6 @@
 import { app, powerMonitor, screen } from 'electron'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { nodeStoreFs } from '../store-fs'
 import type { DisplayInfo } from './display'
 import { createLayoutStore } from './layout-store'
 import { createPlacement, type Placement } from './placement'
@@ -9,12 +9,7 @@ import { createPlacement, type Placement } from './placement'
 export function createElectronPlacement(): Placement {
   const store = createLayoutStore({
     file: join(app.getPath('userData'), 'desk-layout.json'),
-    fs: {
-      readFile: (p) => readFileSync(p, 'utf8'),
-      writeFile: (p, d) => writeFileSync(p, d, 'utf8'),
-      rename: (a, b) => renameSync(a, b),
-      mkdir: (d) => void mkdirSync(d, { recursive: true }),
-    },
+    fs: nodeStoreFs,
   })
   const placement = createPlacement({
     store,

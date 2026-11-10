@@ -1,4 +1,5 @@
 import { app, autoUpdater, BrowserWindow, clipboard, dialog, ipcMain, Menu, session } from 'electron'
+import { join } from 'node:path'
 import { installShellProtocol, registerShellScheme } from './app-shell-protocol'
 import { registerBridgeHandlers } from './bridge/handlers'
 import { APP_USER_MODEL_ID, ORIGIN, PARTITION } from './config'
@@ -8,6 +9,8 @@ import { installPolicy } from './policy/install'
 import { createQuitController, focusExistingWindow } from './quit'
 import { createRecovery, type RecoverableWindow } from './recovery'
 import { CHANNELS } from '../shared/contract'
+import { createConsentStore, createMicrophoneGate } from './policy/microphone'
+import { nodeStoreFs } from './store-fs'
 import { createElectronPlacement } from './windows/placement-electron'
 import { createMainWindow } from './windows/main-window'
 import { followSiteTheme, installThemedTitleBars } from './windows/titlebar'
@@ -43,6 +46,8 @@ if (!app.requestSingleInstanceLock()) {
 
   void app.whenReady().then(() => {
     installThemedTitleBars()
+    const consent = createConsentStore({ file: join(app.getPath('userData'), 'microphone-consent.json'), fs: nodeStoreFs })
+    const microphoneGate = createMicrophoneGate({ store: consent })
     let mainContentsId = -1 // the SITE contents: notifications and the bridge belong to it
     let barContentsId = -1
     installPolicy(
@@ -51,6 +56,7 @@ if (!app.requestSingleInstanceLock()) {
       (c) => c.id === mainContentsId,
       createElectronPlacement(),
       (c) => c.id === barContentsId,
+      microphoneGate,
     )
     registerBridgeHandlers(ipcMain, {
       origin: ORIGIN,
@@ -141,6 +147,7 @@ if (!app.requestSingleInstanceLock()) {
                       clearStorage: async (cookies) => {
                         await ses.clearStorageData({ storages: resetStorages(cookies) })
                         await ses.clearCache()
+                        consent.clear() // a denied microphone is asked about again
                       },
                       loadSite: () => created.guard.retry(),
                     },

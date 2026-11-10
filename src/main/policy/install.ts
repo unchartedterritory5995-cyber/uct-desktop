@@ -1,4 +1,4 @@
-import { app, dialog, shell, type DownloadItem, type Session, type WebContents } from 'electron'
+import { app, BrowserWindow, dialog, shell, type DownloadItem, type Session, type WebContents } from 'electron'
 import { join } from 'node:path'
 import type { Placement } from '../windows/placement'
 import { forceTitle, WINDOW_TITLE } from '../windows/chrome'
@@ -6,7 +6,8 @@ import { installZoomKeys } from '../windows/zoom'
 import { classifyNavigation, classifyNewWindow } from './classify'
 import { safeDownloadName } from './downloads'
 import { classifyExternalFlow, EXTERNAL_FLOW_NOTICE } from './external-flow'
-import { isPermissionAllowed } from './permissions'
+import { MICROPHONE_DIALOG_DETAIL, MICROPHONE_DIALOG_MESSAGE, type MicrophoneGate } from './microphone'
+import { isPermissionAllowed, mediaEligible } from './permissions'
 
 function openExternally(url: string): void {
   void shell.openExternal(url).catch(() => undefined)
@@ -76,28 +77,74 @@ function guardDownload(item: DownloadItem): void {
   void dialog.showMessageBox({ type: 'info', message: 'This file type cannot be saved from the desktop app.' })
 }
 
+// Whichever window it is: the main window's site view, a popped board, a real-URL popup.
+function isFocused(contents: WebContents): boolean {
+  return !!BrowserWindow.fromWebContents(contents)?.isFocused() || contents.isFocused()
+}
+
+async function askMicrophone(contents: WebContents): Promise<boolean> {
+  const options = {
+    type: 'question' as const,
+    message: MICROPHONE_DIALOG_MESSAGE,
+    detail: MICROPHONE_DIALOG_DETAIL,
+    buttons: ['Allow', 'Don\u2019t allow'],
+    defaultId: 1,
+    cancelId: 1,
+  }
+  const parent = BrowserWindow.fromWebContents(contents) ?? BrowserWindow.getFocusedWindow()
+  const { response } = parent ? await dialog.showMessageBox(parent, options) : await dialog.showMessageBox(options)
+  return response === 0
+}
+
 export function installPolicy(
   session: Session,
   appOrigin: string,
   isMainWindow: (contents: WebContents) => boolean,
   placement?: Placement,
   isTitleBar: (contents: WebContents) => boolean = () => false,
+  microphone?: MicrophoneGate,
 ): void {
   session.on('will-download', (_event, item) => guardDownload(item))
   session.setPermissionRequestHandler((contents, permission, callback, details) => {
-    const media = 'mediaTypes' in details ? details : undefined
-    const origin = media?.securityOrigin || details.requestingUrl
-    callback(isPermissionAllowed({ permission, origin, mediaTypes: media?.mediaTypes, fromMainWindow: isMainWindow(contents) }, appOrigin))
+    if (permission === 'media') {
+      const media = 'mediaTypes' in details ? details : undefined
+      const eligible = mediaEligible(
+        {
+          requestingUrl: details.requestingUrl,
+          securityOrigin: media?.securityOrigin,
+          mediaTypes: media?.mediaTypes,
+          isMainFrame: details.isMainFrame,
+          windowFocused: isFocused(contents),
+        },
+        appOrigin,
+      )
+      if (!eligible || !microphone) return callback(false)
+      void microphone.request(appOrigin, () => askMicrophone(contents)).then(callback, () => callback(false))
+      return
+    }
+    callback(isPermissionAllowed({ permission, origin: details.requestingUrl, fromMainWindow: isMainWindow(contents) }, appOrigin))
   })
   session.setPermissionCheckHandler((contents, permission, requestingOrigin, details) => {
-    const mediaType = 'mediaType' in details ? details.mediaType : undefined
+    if (permission === 'media') {
+      // Synchronous, so it cannot ask: it only reports an answer the member already gave.
+      const mediaType = 'mediaType' in details ? details.mediaType : undefined
+      return (
+        !!contents &&
+        !!microphone?.isGranted(appOrigin) &&
+        mediaEligible(
+          {
+            requestingUrl: details.requestingUrl ?? requestingOrigin,
+            securityOrigin: details.securityOrigin,
+            mediaTypes: mediaType === 'audio' ? ['audio'] : undefined,
+            isMainFrame: details.isMainFrame,
+            windowFocused: isFocused(contents),
+          },
+          appOrigin,
+        )
+      )
+    }
     return isPermissionAllowed(
-      {
-        permission,
-        origin: details.securityOrigin || requestingOrigin,
-        mediaTypes: mediaType ? [mediaType] : undefined,
-        fromMainWindow: contents ? isMainWindow(contents) : false,
-      },
+      { permission, origin: details.securityOrigin || requestingOrigin, fromMainWindow: contents ? isMainWindow(contents) : false },
       appOrigin,
     )
   })
