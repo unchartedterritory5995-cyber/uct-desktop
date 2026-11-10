@@ -61,9 +61,10 @@ export function connect(url) {
   })
 }
 
-export async function startApp(target, port, extraArgs = []) {
+export async function startApp(target, port, extraArgs = [], options = {}) {
   await refuseBusyPort(port)
-  const profile = mkdtempSync(join(tmpdir(), `uct-clean-${target}-`))
+  const profile = options.profile ?? mkdtempSync(join(tmpdir(), `uct-clean-${target}-`))
+  const signIn = options.signIn ?? true
   const exe =
     target === 'electron'
       ? process.env.UCT_PROOF_EXE || resolve('release', 'win-unpacked', 'UCT Intelligence.exe')
@@ -125,9 +126,10 @@ $wantIconic = ${command === 6 ? '$true' : '$false'}
     throw new Error('app page did not appear')
   }
 
-  const close = async () => {
+  const close = async ({ keepProfile = false } = {}) => {
     cleanup()
     await sleep(2500)
+    if (keepProfile || options.profile) return
     try { rmSync(profile, { recursive: true, force: true }) } catch { /* left in temp */ }
   }
   async function boot() {
@@ -157,10 +159,12 @@ $wantIconic = ${command === 6 ? '$true' : '$false'}
     }
 
     await waitFor(`location.origin === '${BASE}' && document.readyState !== 'loading'`, 60000)
-    const creds = JSON.stringify({ email: process.env.BENCH_EMAIL, password: process.env.BENCH_PASSWORD })
-    const login = await run(`fetch('/api/auth/login',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:${JSON.stringify(creds)}}).then(r=>r.status)`)
-    console.log(`sign-in status ${login}`)
-    if (login !== 200) throw new Error('sign-in refused')
+    if (signIn) {
+      const creds = JSON.stringify({ email: process.env.BENCH_EMAIL, password: process.env.BENCH_PASSWORD })
+      const login = await run(`fetch('/api/auth/login',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:${JSON.stringify(creds)}}).then(r=>r.status)`)
+      console.log(`sign-in status ${login}`)
+      if (login !== 200) throw new Error('sign-in refused')
+    }
     return { c, run, waitFor, charts }
   }
 
