@@ -1,47 +1,51 @@
 # Resume here (desktop speed and reliability work)
 
-Last updated 2026-11-10 by an agent session. Read this first after a restart.
+Last updated 2026-11-10 ~14:20 CT by an agent session. Read this first after a restart or a switch.
 
 ## Plans (local, not in this repo)
 
-- **THE PLAN (single authority):** `C:\Users\Patrick\reports\UCT desktop app FINAL plan - speed and reliability.md` (backup beside it)
-- History: `UCT desktop app speed and reliability plan.md`; Charts analysis log: `UCT desktop charts speed analysis.md`
-- Overall program: `C:\Users\Patrick\reports\UCT desktop app implementation plan v2.md`
+- **THE PLAN (single authority, v1.2):** `C:\Users\Patrick\reports\UCT desktop app FINAL plan - speed and reliability.md` (backup beside it)
+- Measurements and findings log: `C:\Users\Patrick\reports\UCT desktop charts speed analysis.md` (sections 3a and 3b hold today's real-board numbers)
+- History: `UCT desktop app speed and reliability plan.md`. Overall program: `UCT desktop app implementation plan v2.md`
 
 ## Owner decisions on 2026-11-10
 
-- Speed bar is the hardware floor ("instant, smooth, no lag, whatever it takes").
-- **Tray residency:** closing the window hides the desk; the app keeps running. Supersedes v2's "close = quit". Updates install on a real Quit, or after hours with no window open for 10 minutes. Never interrupts.
-- Stack upgrades are allowed when a proof shows they move a target.
+- Speed bar is the hardware floor ("instant, smooth, no lag, whatever it takes"), for every member, not only this desk.
+- **Tray residency:** closing the window hides the desk. Supersedes v2's "close = quit". Off in production until website idle mode (Task 22) and the updater exist.
+- Stack upgrades allowed when a proof shows they move a target. Operate like a large-scale product (plan Step 9).
 
-## Code on branch `wip/speed-reliability` (NOT yet tested or built)
+## What was measured today (real Charts widget pop-outs, `charts-load-proofs.mjs`)
 
-Written while a load proof was using the PC, so `npm run check` has not run on it yet.
+- Cost scales with the **total number of live charts**: 4 charts = p95 17 ms (60 fps) on 3 of 4 monitors; 12 charts = p95 84-117 ms, 14-18% of frames over 50 ms, 2.4-3.1 GB, ~2 cores.
+- Chrome is equally slow on the same board: the cost is website code, so fixes reach every member.
+- CPU profile at 12 charts: the one renderer thread is 60% busy; chart drawing (Lightweight Charts), browser drawing work and garbage collection dominate; React re-renders are a small share.
+- Graphics: 8 monitors on 2x GT 710 + Intel iGPU, end-of-life NVIDIA driver; monitor index 7 doubles p95 at 4 charts. Real but secondary.
+- **Decision from the data: per-board renderer processes (plan E10) are now first in Step 3**, then cheaper charts, then "unseen charts do not draw".
+
+## Code on branch `wip/speed-reliability` (pushed; NOT yet through `npm run check`)
 
 | File | What |
 |---|---|
-| `src/main/updates.ts` + test | Task 28 updater client: install on quit, never downgrade, drop a pulled release, fail-closed signature check, 3 repeated failures, min shell version (fails open) |
-| `src/main/event-log.ts` + test | Black box: JSON-lines lifecycle log, unclean-exit detection, crash dumps local only, last 40 events in Copy Diagnostics |
-| `src/main/market-hours.ts` + test | One market-hours definition (moved out of recovery.ts), DST-tested |
-| `src/main/residency.ts` + test | Tray: close hides, Open/Quit/Start with Windows, after-hours idle install |
-| `src/main/index.ts`, `windows/main-window.ts` | Wiring: tray, `hidden` window state to the site, hidden start, crash/hang/load-failure logging |
-| `scripts/proofs/load-proofs.mjs` | Reports every window's state when a step fails |
-
-## Review fixes (second commit on the branch)
-
-An independent review found the branch did not compile and had five behaviour bugs; all fixed (see the plan's "Independent review" section). **The tray is OFF in production builds** (`TRAY_RESIDENCY_ENABLED` in `config.ts`) until Task 22 and the updater exist; a dev build turns it on with `UCT_DESKTOP_TRAY=1`. Today's load numbers are unusable (overlapping runs); a clean run started 12:55 CT.
+| `src/main/event-log.ts` + test | Black box: scrubbed JSON-lines lifecycle log, unclean-exit detection, local crash dumps, last 40 events in Copy Diagnostics |
+| `src/main/updates.ts` + test | Updater client logic (Task 28), not wired to electron-updater yet |
+| `src/main/residency.ts` + test | Tray residency, off in production (`TRAY_RESIDENCY_ENABLED`, dev: `UCT_DESKTOP_TRAY=1`) |
+| `src/main/market-hours.ts` + test | One market-hours and extended-session definition, DST-tested |
+| `src/main/index.ts`, `windows/main-window.ts`, `config.ts`, `diagnostics.ts`, `store-fs.ts` | Wiring and the independent review's fixes |
+| `scripts/proofs/charts-load-proofs.mjs` | Real-board load proof: `--dry`, `--quick=N --display=I`, `--profile=N` (CPU profile + redraw count); always restores the bench board |
 
 ## Next steps, in order
 
-1. `npm run check` (typecheck, vitest, build). Fix what fails. Never build while a proof is running: proofs launch `release/win-unpacked`.
-2. Read the load proof results (`proof-output/results-load-electron.json`, `-chrome.json`). Runs that overlapped other work are in `proof-output/contaminated/`. Compare CPU, memory and frame p95 at 4/8/12 charts; G1 floor is 1.25x Chrome, owner bar is 20% below Chrome. Record in `docs/PROTOTYPE-RESULTS.md`. Then Task 22.
-3. Prove the tray on the real app: close hides all windows, reopen under 50 ms, `--hidden` start stays hidden (including offline), Quit runs the before-quit handshake, single-instance reopen.
-4. Version 0.1.3, build installer, release to Bracco (private release on `uct-large-files`, DM via the UCT bot).
-5. Plan Phase E in order: E1 local-first boot, E3 shared data stream, E4 frame-locked updates.
+1. `npm run check` on the branch (typecheck, vitest, build). Fix what fails.
+2. Prove the tray on a dev build; then version 0.1.3 with the black box (tray off), build the installer, release to Bracco (private release on `uct-large-files`, DM via the UCT bot).
+3. Design per-board renderer processes (plan 3.0): how a board's widgets keep ticker links, live data, restore and docking across processes. Design first, then build, then measure with `charts-load-proofs.mjs`.
+4. Then plan Step 3.1 onward (cheaper charts) with a profile that has source maps, so minified names resolve to files.
 
-## Known facts that cost time before
+## Rules that cost time today
 
-- Playwright launches add popup and throttling switches: popup and background proofs under it are false passes. Use `clean-proofs.mjs`.
-- The shared bench account can be changed by other sessions; restore via `/api/workspace/doc/restore`.
-- Website: precompressed assets are live (`9bccdaab5c`) but Cloudflare decompresses them, so members save nothing until the Cloudflare setting changes. Never drop `no-transform`.
+- Measure only the real member path: Charts widgets popped out by their own buttons. Never Terminal price-chart pop-outs.
+- One measurement at a time: count running `proofs` node processes first and refuse if non-zero. Killing the first half of `a; b` starts `b`: stop the whole chain. A killed run skips its board restore: restore the bench board by hand from `boardVersionBefore` in its results file (`/api/workspace/doc/restore`).
+- Never build while a proof runs: proofs launch `release/win-unpacked`.
+- Edit source with the Edit tool or binary-mode writes: Python text-mode writes on Windows produced CRLF files and a raw newline inside a string literal.
+- Playwright launches add popup and throttling switches: popup and background proofs under it are false passes; use `clean-proofs.mjs`.
+- Website: precompressed assets are live (`9bccdaab5c`) but Cloudflare decompresses them; members save nothing until the Cloudflare setting changes. Never drop `no-transform`.
 - Session-only scheduled jobs die with a crash or restart.
