@@ -8,7 +8,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { cpus } from 'node:os'
 import { join } from 'node:path'
-import { BASE, connect, sleep, startApp } from './launch.mjs'
+import { BASE, connect, recordTrace, sleep, startApp } from './launch.mjs'
 
 const target = process.argv[2]
 if (target !== 'electron' && target !== 'chrome') throw new Error('target must be electron or chrome')
@@ -17,9 +17,18 @@ const displayIndex = Number((process.argv.find((a) => a.startsWith('--display=')
 
 const OUT = 'proof-output'
 const PORT = target === 'electron' ? 9335 : 9336
-const STEPS = dry ? [2] : [4, 8, 12]
-const SETTLE_MS = dry ? 20000 : 60000
-const MEASURE_MS = dry ? 20000 : 300000
+// Process-model experiment (plan 3.0): --noopener opens each chart window as its own browsing
+// context group, so Chromium can give it its own renderer process; the default shares the opener's.
+// --quick=N: one step of N windows, 30 s settle, 60 s measure.
+const NOOPENER = process.argv.includes('--noopener')
+// --chromium-<flag>[=value] passes --<flag>[=value] to the app or browser (GPU experiments).
+const EXTRA = process.argv.filter((a) => a.startsWith('--chromium-')).map((a) => `--${a.slice('--chromium-'.length)}`)
+const TAG = EXTRA.length ? `-${EXTRA.map((f) => f.replace(/^--/, '').replace(/[^a-z0-9]+/gi, '_')).join('+')}` : ''
+const quickArg = process.argv.find((a) => a.startsWith('--quick='))
+const QUICK_N = quickArg ? Number(quickArg.split('=')[1]) : 0
+const STEPS = QUICK_N ? [QUICK_N] : dry ? [2] : [4, 8, 12]
+const SETTLE_MS = dry ? 20000 : QUICK_N ? 30000 : 60000
+const MEASURE_MS = dry ? 20000 : QUICK_N ? 60000 : 300000
 const SYMBOLS = ['NVDA', 'AAPL', 'MSFT', 'AMZN', 'META', 'GOOGL', 'TSLA', 'AMD', 'AVGO', 'SPY', 'QQQ', 'IWM']
 const WIDTH = 480
 const HEIGHT = 360
@@ -28,7 +37,7 @@ const MIN_FRAMES = 30
 
 mkdirSync(OUT, { recursive: true })
 const results = { target, startedUtc: new Date().toISOString(), dry, steps: [] }
-const file = join(OUT, `results-load-${target}${dry ? '-dry' : ''}.json`)
+const file = join(OUT, `results-load-${target}${dry ? '-dry' : ''}${QUICK_N ? `-quick${QUICK_N}${NOOPENER ? '-noopener' : '-shared'}` : ''}${TAG}.json`)
 const save = () => writeFileSync(file, JSON.stringify(results, null, 2))
 
 const token = (symbol) => Buffer.from(JSON.stringify({ c: 'GP', s: symbol, a: [] })).toString('base64url')
@@ -92,6 +101,15 @@ async function evalIn(session, expression) {
   return r.result.value
 }
 
+// Chromium's own per-process CPU time (seconds) by process id, with its type.
+async function processTypes() {
+  const v = await (await fetch(`http://127.0.0.1:${PORT}/json/version`)).json()
+  const s = await connect(v.webSocketDebuggerUrl)
+  const r = await s.send('SystemInfo.getProcessInfo')
+  try { s.close?.() } catch { /* ignore */ }
+  return new Map(r.processInfo.map((p) => [p.id, { type: p.type, cpuTime: p.cpuTime }]))
+}
+
 async function attachCharts(count) {
   const deadline = Date.now() + 90000
   let last
@@ -115,7 +133,8 @@ try {
   if (display.w < COLUMNS * WIDTH || display.h < Math.ceil(12 / COLUMNS) * HEIGHT) throw new Error('chart windows do not fit that display')
   // Applied equally to both apps: a window covered by something else on the monitor would
   // otherwise report hidden and stop painting, which would measure the desktop, not the app.
-  app = await startApp(target, PORT, ['--disable-features=CalculateNativeWinOcclusion'])
+  app = await startApp(target, PORT, ['--disable-features=CalculateNativeWinOcclusion', ...EXTRA])
+  results.chromiumFlags = EXTRA
   const { child, c, run, charts } = app
   await charts()
   await sleep(9000)
@@ -131,21 +150,46 @@ try {
       const url = `${BASE}/terminal?popout=${token(SYMBOLS[opened])}`
       const x = display.x + (opened % COLUMNS) * WIDTH
       const y = display.y + Math.floor(opened / COLUMNS) * HEIGHT
-      const ok = await run(`!!window.open(${JSON.stringify(url)},'proof-load-${opened}','popup,width=${WIDTH},height=${HEIGHT},left=${x},top=${y}')`, true)
+      // noopener: window.open returns null by design, so success is judged by the window count below.
+      const ok = NOOPENER
+        ? await run(`(window.open(${JSON.stringify(url)},'_blank','noopener,popup,width=${WIDTH},height=${HEIGHT},left=${x},top=${y}'),true)`, true)
+        : await run(`!!window.open(${JSON.stringify(url)},'proof-load-${opened}','popup,width=${WIDTH},height=${HEIGHT},left=${x},top=${y}')`, true)
       if (!ok) throw new Error(`window ${opened} did not open`)
       await sleep(1200)
     }
     const targets = await attachCharts(count)
     await sleep(SETTLE_MS)
+    if (process.argv.includes('--trace')) {
+      const file = join(OUT, `trace-${target}-${count}${NOOPENER ? '-noopener' : '-shared'}${TAG}.json`)
+      await recordTrace(PORT, file, 6000)
+      console.log(`[TRACE] ${file}`)
+      break
+    }
     const sessions = []
     for (const t of targets) sessions.push(await connect(t.webSocketDebuggerUrl))
     for (const s of sessions) await evalIn(s, START)
     await evalIn(c, START)
     const before = processTree(child.pid)
+    const byTypeBefore = await processTypes()
     const t0 = Date.now()
     await sleep(MEASURE_MS)
     const after = processTree(child.pid)
+    const byTypeAfter = await processTypes()
     const elapsed = Date.now() - t0
+    // CPU per Chromium process type (browser, GPU, renderer, utility), as % of one core: shows
+    // which process is saturated when frames are late.
+    const perType = {}
+    for (const [id, a] of byTypeAfter) {
+      const b = byTypeBefore.get(id)
+      const key = a.type
+      perType[key] = perType[key] || { processes: 0, maxPctOfOneCore: 0, sumPctOfOneCore: 0 }
+      const pct = b ? Math.round(((a.cpuTime - b.cpuTime) / (elapsed / 1000)) * 100) : null
+      perType[key].processes++
+      if (pct !== null) {
+        perType[key].sumPctOfOneCore += pct
+        perType[key].maxPctOfOneCore = Math.max(perType[key].maxPctOfOneCore, pct)
+      }
+    }
     const windows = []
     for (const s of sessions) windows.push(await evalIn(s, STOP))
     const opener = await evalIn(c, STOP)
@@ -153,6 +197,7 @@ try {
     const step = {
       charts: count,
       usage: usage(before, after, elapsed),
+      perType,
       rendered: windows.filter((w) => w.canvases > 0).length,
       painting: p95s.length,
       valid: p95s.length === count && windows.every((w) => w.canvases > 0),

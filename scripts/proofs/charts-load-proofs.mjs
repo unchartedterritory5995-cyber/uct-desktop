@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { cpus } from 'node:os'
 import { join } from 'node:path'
-import { connect, sleep, startApp } from './launch.mjs'
+import { connect, recordTrace, sleep, startApp } from './launch.mjs'
 
 const target = process.argv[2]
 if (target !== 'electron' && target !== 'chrome') throw new Error('target must be electron or chrome')
@@ -234,6 +234,33 @@ try {
       await evalIn(sessions[i], `(()=>{try{moveTo(${x},${y});resizeTo(${WIDTH},${HEIGHT})}catch{}return true})()`)
     }
     await sleep(SETTLE_MS)
+    // --kill-anim=<substr>[,<substr>]: in every window, stop CSS animations on elements whose class
+    // contains one of the substrings (an experiment to prove an animation's cost before changing code).
+    const killArg = process.argv.find((a) => a.startsWith('--kill-anim='))
+    if (killArg) {
+      const subs = killArg.split('=')[1].split(',').filter(Boolean)
+      const css = subs.map((s) => `[class*="${s}"]{animation:none!important}`).join('')
+      const INJECT = `(()=>{const s=document.createElement('style');s.textContent=${JSON.stringify(css)};document.head.appendChild(s);return document.getAnimations().length})()`
+      results.killedAnimations = subs
+      for (const s of [c, ...sessions]) await evalIn(s, INJECT)
+      await sleep(3000)
+    }
+    if (process.argv.includes('--animations')) {
+      // Every running animation in each window: what it is, what it animates, which element.
+      const LIST = `(()=>document.getAnimations().map(a=>{const t=a.effect&&a.effect.target;const kf=a.effect&&a.effect.getKeyframes?a.effect.getKeyframes():[];return {name:a.animationName||a.constructor.name,state:a.playState,props:[...new Set(kf.flatMap(k=>Object.keys(k).filter(x=>!['offset','easing','composite','computedOffset'].includes(x))))].join(','),iterations:a.effect&&a.effect.getTiming?String(a.effect.getTiming().iterations):'',el:t?(t.tagName+'.'+String(t.className&&t.className.baseVal!==undefined?t.className.baseVal:t.className).split(' ').slice(0,2).join('.')).slice(0,80):''}}))()`
+      results.animations = []
+      for (const [i, s] of [c, ...sessions].entries()) results.animations.push({ window: i === 0 ? 'main' : `popout-${i}`, list: await evalIn(s, LIST) })
+      save()
+      for (const w of results.animations) console.log(`[ANIM] ${w.window}: ${JSON.stringify(w.list)}`)
+      break
+    }
+    if (process.argv.includes('--trace')) {
+      const tf = join(OUT, `trace-charts-${target}-${count}.json`)
+      await recordTrace(PORT, tf, 6000)
+      results.trace = tf
+      console.log(`[TRACE] ${tf}`)
+      break
+    }
     if (PROFILE_N) {
       // Redraw rate: every Lightweight Charts repaint clears its canvases first, so clearRect calls
       // per second per window (divided by that window's canvases) is how often its charts redraw.

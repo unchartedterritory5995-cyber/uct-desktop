@@ -4,7 +4,7 @@
 // Signs in from BENCH_EMAIL / BENCH_PASSWORD, never printed. Sends no OS keys or clicks; the only
 // OS call minimizes and restores the window this run started.
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -174,4 +174,35 @@ $wantIconic = ${command === 6 ? '$true' : '$false'}
     await close()
     throw e
   }
+}
+
+// A Chromium trace across every process (browser, GPU, renderers), written as JSON for analysis.
+export async function recordTrace(port, file, ms) {
+  const v = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()
+  const ws = new WebSocket(v.webSocketDebuggerUrl)
+  await new Promise((r) => ws.addEventListener('open', r))
+  let id = 0
+  const pending = new Map()
+  const events = []
+  let done
+  const complete = new Promise((r) => { done = r })
+  ws.addEventListener('message', (e) => {
+    const m = JSON.parse(e.data)
+    if (m.id && pending.has(m.id)) { pending.get(m.id)(m); pending.delete(m.id) }
+    else if (m.method === 'Tracing.dataCollected') events.push(...m.params.value)
+    else if (m.method === 'Tracing.tracingComplete') done()
+  })
+  const send = (method, params = {}) => new Promise((r) => { const i = ++id; pending.set(i, r); ws.send(JSON.stringify({ id: i, method, params })) })
+  await send('Tracing.start', {
+    transferMode: 'ReportEvents',
+    traceConfig: {
+      recordMode: 'recordAsMuchAsPossible',
+      includedCategories: ['toplevel', 'blink', 'cc', 'gpu', 'viz', 'v8', 'renderer.scheduler', 'disabled-by-default-devtools.timeline', 'disabled-by-default-devtools.timeline.frame', 'devtools.timeline', 'benchmark', 'input', 'ipc', 'mojom', 'disabled-by-default-gpu.service', 'disabled-by-default-viz.surface_id_flow'],
+    },
+  })
+  await sleep(ms)
+  await send('Tracing.end')
+  await Promise.race([complete, sleep(60000)])
+  ws.close()
+  writeFileSync(file, JSON.stringify({ traceEvents: events }))
 }
