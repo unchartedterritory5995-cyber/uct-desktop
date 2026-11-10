@@ -2,8 +2,12 @@
 
 const RULES: [RegExp, string][] = [
   [/Bearer\s+[A-Za-z0-9._~+/=-]{8,}/gi, 'Bearer [removed]'],
-  [/\b(cookie|set-cookie|authorization)\s*[:=]\s*[^\s;]+(?:;\s*[^\s;]+)*/gi, '$1: [removed]'],
-  [/\b([A-Za-z_]*(?:token|secret|password|passwd|apikey|api_key|key|session|sid)[A-Za-z_]*)\s*[=:]\s*[^\s&,;]+/gi, '$1=[removed]'],
+  // Authorization: <scheme> <credentials> (Basic, Digest, Token...) or a bare value.
+  [/\b((?:proxy-)?authorization)(["']?)\s*[:=]\s*["']?(?:(?:Basic|Digest|Bearer|Token|Negotiate)\s+)?[^\s"',;]+/gi, '$1: [removed]'],
+  // Cookie headers: name=value pairs separated by semicolons.
+  [/\b((?:set-)?cookie)(["']?)\s*[:=]\s*["']?[^\s;="']+=[^\s;"']*(?:;\s*[^\s;="']+=[^\s;"']*)*/gi, '$1: [removed]'],
+  // key=value, key: value and JSON "key":"value" for secret-looking keys.
+  [/(["']?)\b([A-Za-z_-]*(?:token|secret|password|passwd|pwd|apikey|api_key|key|session|sid|cookie)[A-Za-z_-]*)\1\s*[=:]\s*(?:"[^"]*"|'[^']*'|[^\s&,;"']+)/gi, '$2=[removed]'],
   [/\b(?:sk|pk|rk|whsec)_[A-Za-z0-9_]{8,}/g, '[removed-key]'],
   [/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, '[removed-email]'],
   [/(https?:\/\/[^\s?#]+)[?#][^\s]*/g, '$1'],

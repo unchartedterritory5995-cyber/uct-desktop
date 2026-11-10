@@ -204,6 +204,21 @@ describe('diagnostics', () => {
     expect(out).not.toContain('token=zzz')
     expect(out).toContain('https://uctintelligence.com/a')
   })
+  it('scrubs Authorization: Basic and other schemes', () => {
+    const basic = ['dXNlcjpwYXNzd29yZA', '=='].join('')
+    const out = scrub(`Authorization: Basic ${basic}\nproxy-authorization: Digest abc123def456\nauthorization=Bearer ${'q'.repeat(30)}`)
+    expect(out).not.toContain(basic)
+    expect(out).not.toContain('abc123def456')
+    expect(out).not.toContain('q'.repeat(30))
+  })
+  it('scrubs JSON-shaped secrets and common variants', () => {
+    const json = `{"${['access', 'token'].join('_')}":"AAA111","${['refresh', 'token'].join('_')}": "BBB222","password":"hunter2","note":"keep me"}`
+    const out = scrub(json)
+    for (const v of ['AAA111', 'BBB222', 'hunter2']) expect(out).not.toContain(v)
+    expect(out).toContain('keep me')
+    const more = scrub(`${['refresh', 'token'].join('_')}=CCC333 pwd: DDD444 api_key='EEE555' Cookie: a=FFF666; b=GGG777 "cookie":"h=HHH888"`)
+    for (const v of ['CCC333', 'DDD444', 'EEE555', 'FFF666', 'GGG777', 'HHH888']) expect(more).not.toContain(v)
+  })
   it('reports versions, process metrics and cache size, scrubbed', () => {
     const text = buildDiagnostics({
       appVersion: '0.1.1',
