@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { buildBridge, buildShellBridge, type IpcRendererLike } from '../src/preload/bridge'
+import { buildBarBridge, buildBridge, buildShellBridge, type IpcRendererLike } from '../src/preload/bridge'
 import { BRIDGE_VERSION, CAPABILITIES, CHANNELS, hasDesktopFeature } from '../src/shared/contract'
 
 const O = 'https://uctintelligence.com'
@@ -67,6 +67,18 @@ describe('the error page bridge', () => {
     expect(Object.keys(s)).toEqual(['retry'])
     s.retry()
     expect(sent).toEqual([CHANNELS.retry])
+  })
+})
+
+describe('the title bar bridge', () => {
+  it('exposes only back(), takes no argument, and only on the app-shell origin', () => {
+    const { ipc, sent } = fakeIpc()
+    expect(buildBarBridge(ipc, O)).toBeNull()
+    const b = buildBarBridge(ipc, 'app-shell://shell')!
+    expect(Object.keys(b)).toEqual(['back'])
+    expect(b.back.length).toBe(0)
+    b.back()
+    expect(sent).toEqual([CHANNELS.barBack])
   })
 })
 

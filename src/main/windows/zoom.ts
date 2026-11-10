@@ -21,8 +21,10 @@ export function nextZoomLevel(level: number, action: ZoomAction): number {
   return Math.min(MAX_LEVEL, Math.max(-MAX_LEVEL, next))
 }
 
-export function installZoomKeys(contents: WebContents): void {
+/** `enabled` lets the title bar page opt out: only the site zooms. */
+export function installZoomKeys(contents: WebContents, enabled: () => boolean = () => true): void {
   contents.on('before-input-event', (event: Event, input: Input) => {
+    if (!enabled()) return
     const action = zoomAction(input)
     if (!action) return
     event.preventDefault()

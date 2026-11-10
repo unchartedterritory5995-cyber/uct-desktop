@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src app-shell://shell">
+<title>UCT Intelligence</title>
+<style>
+  :root { --bg: #101012; --fg: #ffffff; }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: var(--bg); color: var(--fg); font-family: "Segoe UI", system-ui, sans-serif; user-select: none; }
+  header { position: relative; height: 32px; -webkit-app-region: drag; }
+  #back { position: absolute; left: 0; top: 0; width: 46px; height: 32px; border: 0; background: transparent; color: var(--fg); cursor: pointer; -webkit-app-region: no-drag; font-size: 16px; line-height: 32px; padding: 0; }
+  #back:hover:not(:disabled) { background: color-mix(in srgb, var(--fg) 14%, transparent); }
+  #back:disabled { opacity: 0.35; cursor: default; }
+  #back:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+  #title { position: absolute; left: 0; right: 0; top: 0; text-align: center; font-size: 12px; line-height: 32px; pointer-events: none; }
+</style>
+</head>
+<body>
+<header>
+  <button id="back" type="button" aria-label="Back" title="Back" disabled>&#8592;</button>
+  <div id="title">UCT Intelligence</div>
+</header>
+<script src="app-shell://shell/bar.js"></script>
+</body>
+</html>

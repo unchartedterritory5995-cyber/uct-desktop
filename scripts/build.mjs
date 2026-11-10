@@ -27,6 +27,18 @@ await build({
   sourcemap: false,
 })
 
+// The title bar page gets its own tiny sandboxed preload, separate from the website bridge.
+await build({
+  entryPoints: ['src/preload/bar.ts'],
+  outfile: 'dist/preload/bar.js',
+  bundle: true,
+  platform: 'node',
+  format: 'cjs',
+  target: 'node22',
+  external: ['electron'],
+  sourcemap: false,
+})
+
 // The offline page is plain static files, served by name from dist/pages.
 mkdirSync('dist/pages', { recursive: true })
 cpSync('pages', 'dist/pages', { recursive: true })

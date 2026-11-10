@@ -21,6 +21,12 @@ export function buildShellBridge(ipc: IpcRendererLike, locationOrigin: string): 
   return { retry: () => ipc.send(CHANNELS.retry) }
 }
 
+/** The title bar page's own bridge: just `back()`, no arguments, only on the app-shell origin. */
+export function buildBarBridge(ipc: IpcRendererLike, locationOrigin: string): { back(): void } | null {
+  if (locationOrigin !== 'app-shell://shell') return null
+  return { back: () => ipc.send(CHANNELS.barBack) }
+}
+
 /** Null unless the page is on the app origin: the preload exposes nothing anywhere else. */
 export function buildBridge(ipc: IpcRendererLike, locationOrigin: string, appOrigin: string): UctDesktop | null {
   if (!appOrigin || locationOrigin !== appOrigin) return null
