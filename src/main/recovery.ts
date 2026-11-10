@@ -6,6 +6,8 @@ import type { Clock } from './load-guard'
 export const MAX_RELOADS = 3
 export const RELOAD_WINDOW_MS = 10 * 60_000
 export const UNRESPONSIVE_MS = 20_000
+/** How long the forced-crash event may take to arrive before the skip flag is dropped. */
+export const SKIP_GONE_MS = 5_000
 
 export interface DialogLike {
   showMessageBox(options: {
@@ -72,6 +74,7 @@ export function createRecovery(deps: RecoveryDeps): { dispose(): void } {
   let hung = false
   let asking = false
   let skipGone = false
+  let skipTimer: unknown
   let abort: AbortController | undefined
   let disposed = false
 
@@ -122,6 +125,8 @@ export function createRecovery(deps: RecoveryDeps): { dispose(): void } {
         hung = false
         // Reload exactly once: the forced crash raises render-process-gone, which is skipped.
         skipGone = true
+        clock.clearTimeout(skipTimer)
+        skipTimer = clock.setTimeout(() => void (skipGone = false), SKIP_GONE_MS)
         wc.forcefullyCrashRenderer()
         reloadCapped()
       } else armHang()
@@ -135,6 +140,7 @@ export function createRecovery(deps: RecoveryDeps): { dispose(): void } {
     abort?.abort()
     if (skipGone) {
       skipGone = false
+      clock.clearTimeout(skipTimer)
       return
     }
     if (details?.reason === 'clean-exit') return
@@ -148,6 +154,8 @@ export function createRecovery(deps: RecoveryDeps): { dispose(): void } {
     armHang()
   }
   const onResponsive = (): void => {
+    skipGone = false
+    clock.clearTimeout(skipTimer)
     hung = false
     clearHang()
     abort?.abort()
@@ -161,6 +169,7 @@ export function createRecovery(deps: RecoveryDeps): { dispose(): void } {
     dispose() {
       disposed = true
       clearHang()
+      clock.clearTimeout(skipTimer)
       abort?.abort()
       wc.removeListener('render-process-gone', onGone)
       wc.removeListener('unresponsive', onUnresponsive)

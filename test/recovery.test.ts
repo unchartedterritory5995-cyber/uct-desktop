@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events'
 import { describe, expect, it } from 'vitest'
-import { createRecovery, isMarketHours, MAX_RELOADS, UNRESPONSIVE_MS, type DialogLike } from '../src/main/recovery'
+import { createRecovery, isMarketHours, MAX_RELOADS, SKIP_GONE_MS, UNRESPONSIVE_MS, type DialogLike } from '../src/main/recovery'
 import type { Clock } from '../src/main/load-guard'
 
 // 2026-11-09 is a Monday; 15:00 UTC = 10:00 ET (market open), 23:00 UTC = 18:00 ET (closed).
@@ -147,6 +147,28 @@ describe('unresponsive', () => {
     expect(wc.forced).toBe(1)
     expect(wc.reloads).toBe(1) // the forced crash event must not trigger a second reload
     expect(children.every((c) => c.destroyed)).toBe(true)
+  })
+  it('a skip flag that is never consumed expires, so the next real crash still reloads', async () => {
+    const { wc, advance, children } = setup(MON_CLOSED, [1])
+    wc.forcefullyCrashRenderer = function () { this.forced++ } // the crash event never arrives
+    wc.emit('unresponsive')
+    advance(UNRESPONSIVE_MS)
+    await flush()
+    expect(wc.reloads).toBe(1)
+    advance(SKIP_GONE_MS + 1)
+    gone(wc)
+    expect(wc.reloads).toBe(2)
+    expect(children.length).toBe(3)
+  })
+  it('responsive also clears the skip flag', async () => {
+    const { wc, advance } = setup(MON_CLOSED, [1])
+    wc.forcefullyCrashRenderer = function () { this.forced++ }
+    wc.emit('unresponsive')
+    advance(UNRESPONSIVE_MS)
+    await flush()
+    wc.emit('responsive')
+    gone(wc)
+    expect(wc.reloads).toBe(2)
   })
   it('aborts the dialog when the page recovers or crashes', async () => {
     const a = setup(MON_CLOSED)
