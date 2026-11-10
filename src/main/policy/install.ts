@@ -3,10 +3,19 @@ import { join } from 'node:path'
 import { installZoomKeys } from '../windows/zoom'
 import { classifyNavigation, classifyNewWindow } from './classify'
 import { safeDownloadName } from './downloads'
+import { classifyExternalFlow, EXTERNAL_FLOW_NOTICE } from './external-flow'
 import { isPermissionAllowed } from './permissions'
 
 function openExternally(url: string): void {
   void shell.openExternal(url).catch(() => undefined)
+}
+
+// Billing and connector sign-ins: tell the member, then open the app's own page in the browser.
+function openExternalOrFlow(url: string, appOrigin: string): void {
+  const flow = classifyExternalFlow(url, appOrigin)
+  if (!flow) return openExternally(url)
+  void dialog.showMessageBox({ type: 'info', message: EXTERNAL_FLOW_NOTICE })
+  openExternally(flow.openUrl)
 }
 
 function guardContents(contents: WebContents, appOrigin: string): void {
@@ -14,7 +23,7 @@ function guardContents(contents: WebContents, appOrigin: string): void {
     const verdict = classifyNavigation(url, appOrigin)
     if (verdict === 'stay') return
     event.preventDefault()
-    if (verdict === 'external-flow') openExternally(url)
+    if (verdict === 'external-flow') openExternalOrFlow(url, appOrigin)
   }
   contents.on('will-navigate', onNavigate)
   // A redirect inside an embedded frame is that frame's business, not the app leaving the site.
@@ -40,7 +49,7 @@ function guardContents(contents: WebContents, appOrigin: string): void {
         },
       }
     }
-    if (verdict === 'external') openExternally(url)
+    if (verdict === 'external') openExternalOrFlow(url, appOrigin)
     return { action: 'deny' }
   })
 }
