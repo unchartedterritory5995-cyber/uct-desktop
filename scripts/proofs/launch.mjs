@@ -84,6 +84,8 @@ export async function startApp(target, port) {
 Add-Type @'
 using System; using System.Runtime.InteropServices; using System.Text;
 public static class W {
+  public struct R { public int L, T, X, B; }
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out R r);
   public delegate bool E(IntPtr h, IntPtr l);
   [DllImport("user32.dll")] public static extern bool EnumWindows(E e, IntPtr l);
   [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
@@ -93,14 +95,16 @@ public static class W {
   [DllImport("user32.dll")] public static extern bool IsIconic(IntPtr h);
 }
 '@
-$hits = New-Object System.Collections.ArrayList
+# Every window's title is forced to the app name, so the main window is the largest one.
+$script:best = [IntPtr]::Zero; $script:bestArea = 0
 [W]::EnumWindows({ param($h, $l)
   $p = 0; [void][W]::GetWindowThreadProcessId($h, [ref]$p)
   if ($p -eq ${child.pid} -and [W]::IsWindowVisible($h)) {
-    $s = New-Object System.Text.StringBuilder 256; [void][W]::GetWindowText($h, $s, 256)
-    if ($s.Length -gt 0 -and $s.ToString() -notlike '*${CHILD_TITLE}*') { [void]$hits.Add($h) }
+    $r = New-Object W+R; [void][W]::GetWindowRect($h, [ref]$r); $area = ($r.X - $r.L) * ($r.B - $r.T)
+    if ($area -gt $script:bestArea) { $script:bestArea = $area; $script:best = $h }
   }
   $true }, [IntPtr]::Zero) | Out-Null
+$hits = @(); if ($script:bestArea -gt 0) { $hits = @($script:best) }
 foreach ($h in $hits) { [void][W]::ShowWindow($h, ${command}) }
 Start-Sleep -Milliseconds 400
 $wantIconic = ${command === 6 ? '$true' : '$false'}
