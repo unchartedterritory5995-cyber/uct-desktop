@@ -41,7 +41,17 @@ Last updated 2026-11-10 ~21:35 CT by an agent session. Read this first after a r
 - Census tests on master (swallowedFetch, jsonFetcher, persistence, symbolLink, formatters, dataGrid) already fail from other sessions' drift; not ours.
 - The intro film plays once a week per device (not every launch): no change needed.
 
-## Status 2026-11-11 ~07:20 CT (newest)
+## Status 2026-11-11 ~10:20 CT (newest): ONE-CLICK UPDATES LIVE
+
+- **Feed:** PUBLIC repo `unchartedterritory5995-cyber/uct-desktop-releases` (owner created it 2026-11-11; release files only). electron-builder `publish: github` writes `app-update.yml`; releases are tagged `vX.Y.Z` with the exe, `.blockmap` and `latest.yml`. Release flow: bump version, `npm run build && npx electron-builder --win nsis --publish never --config.directories.output=release-next`, secret-scan `dist/`, `gh release create vX.Y.Z <exe> <blockmap> latest.yml -R unchartedterritory5995-cyber/uct-desktop-releases`, check `releases/latest/download/latest.yml` anonymously. Pull a bad version: delete its release (the app then reports withdrawn and nothing installs).
+- **Shell:** `src/main/app-update.ts` (hub) + `updates.ts` controller + index.ts wiring; capability `app-update` (getAppUpdate / onAppUpdate / restartToUpdate). Restart = the NORMAL quit first, then `quitAndInstall(true, true)` at will-quit. Updates off in debug runs unless `UCT_PROOF_UPDATES=1`; `UCT_DESKTOP_UPDATES=0` turns them off. Unsigned: sha512 checked, no publisher; wire `createSignatureVerifier` when Azure signing lands.
+- **Website:** `AppUpdateToast.jsx` in DesktopBridgeSync (desktop-only chunk), master `508b3b5ab8`, held by the Wednesday 09:00-11:00 ET freeze, promotes 11:05 ET.
+- **Proven on the owner's installed app** (`update-e2e.mjs --installed --via-bridge --expect=0.1.7`): found 15:09:58, downloaded 15:10:01 (blockmap delta), Restart 15:10:04.34, closed 15:10:04.48, reopened as 0.1.7 15:10:22 (18 s). The proof's first "closed after 301 s" was the DevTools socket hanging; it now watches processes.
+- Releases: 0.1.6 (first with updates), 0.1.7 (version bump, the first delivered by the updater). Owner's PC on 0.1.7. Bracco DM'd 0.1.7 (msg 1570095421697818808), his last manual install.
+- Market-hours page-cost 09:47 ET: /live-massive busy 0.4%, /options-flow 0.3%, rAF 0 (light table 17 min after the open).
+- NEXT: after 11:05 ET confirm the toast in production (publish 0.1.8, run a no-install toast check on release-next 0.1.7); full member rollout needs Azure signing.
+
+## Status 2026-11-11 ~07:20 CT
 
 - Owner said yes to all three (07:50 ET). **0.1.5 sent to Bracco** by bot DM (msg 1570059379561201755); the message discloses the new anonymous crash reports (0.1.3's said nothing is sent).
 - **Nightly speed check LIVE**: Task Scheduler `UCT Desktop Nightly Speed Check`, daily 23:40 CT, `scripts/nightly/run-nightly.cmd` under the heavy lock -> `perf-nightly.mjs`. Members' build (release-share); monitors tried 2,4,0,5 (5 usually has the trading platform maximized, so the window is undrawn). Baseline = median of the last 7 passing nights; over a limit -> recheck; posts to ops (`DISCORD_WEBHOOK_URL`, read from Railway at send time via the linked `uct-dashboard` dir, never stored) only when seen twice; first night, then every 7th of a lasting slowdown. 3 blind nights in a row -> one notice. Intended heavier page: `node scripts/nightly/perf-nightly.mjs --accept`. Output `proof-output/nightly/`. Fired once via Start-ScheduledTask 07:12: pass, baseline seeded (busy 0.7-1.5%, rAF 0 on all five pages).
