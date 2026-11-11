@@ -15,18 +15,23 @@ for (let i = 0; i < RUNS; i++) {
   const r = await page.evaluate(() => {
     const nav = performance.getEntriesByType('navigation')[0]
     const entry = performance.getEntriesByType('resource').find((e) => /\/assets\/index-[\w-]+\.js$/.test(e.name))
+    // Chrome: responseStart is the FIRST byte of anything, a 103 included; finalResponseHeadersStart is the real page.
+    const hint = nav.firstInterimResponseStart || 0
+    const page = Math.round(nav.finalResponseHeadersStart || nav.responseStart)
     return {
-      htmlFirstByte: Math.round(nav.responseStart),
+      hint103: hint ? Math.round(hint) : null,
+      htmlFirstByte: page,
       entryStart: entry ? Math.round(entry.startTime) : null,
       entryEnd: entry ? Math.round(entry.responseEnd) : null,
+      entryVia: entry ? entry.initiatorType : null,
       load: Math.round(nav.loadEventEnd),
-      hinted: entry ? entry.startTime < nav.responseStart : null,
+      hinted: entry ? entry.startTime < page : null,
     }
   })
   rows.push(r)
-  console.log(`run ${i + 1}: HTML first byte ${r.htmlFirstByte} ms | entry script ${r.entryStart}-${r.entryEnd} ms | load ${r.load} ms | started before HTML: ${r.hinted}`)
+  console.log(`run ${i + 1}: 103 hint ${r.hint103} ms | HTML first byte ${r.htmlFirstByte} ms | via ${r.entryVia} | entry script ${r.entryStart}-${r.entryEnd} ms | load ${r.load} ms | started before HTML: ${r.hinted}`)
   await ctx.close()
 }
 await browser.close()
 const med = (k) => { const v = rows.map((r) => r[k]).filter((x) => x != null).sort((a, b) => a - b); return v[Math.floor(v.length / 2)] }
-console.log(`MEDIAN: HTML first byte ${med('htmlFirstByte')} ms | entry script done ${med('entryEnd')} ms | load ${med('load')} ms`)
+console.log(`MEDIAN: 103 hint ${med('hint103')} ms | HTML first byte ${med('htmlFirstByte')} ms | entry script done ${med('entryEnd')} ms | load ${med('load')} ms`)

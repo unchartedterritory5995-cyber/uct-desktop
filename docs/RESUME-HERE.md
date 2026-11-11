@@ -41,12 +41,15 @@ Last updated 2026-11-10 ~21:35 CT by an agent session. Read this first after a r
 - Census tests on master (swallowedFetch, jsonFetcher, persistence, symbolLink, formatters, dataGrid) already fail from other sessions' drift; not ours.
 - The intro film plays once a week per device (not every launch): no change needed.
 
-## NEXT SESSION START HERE (2026-11-11, after Step 10)
+## NEXT SESSION START HERE (2026-11-11 evening, Step 10 verified live)
 
-- Step 10 done the same day (plan file, 'Step 10 results'): 10.1 real-user beacon, 10.3 Early Hints, 10.5 rush gate SHIPPED; 10.4 no change (already us-east4); 10.2 deliberately not now (paid or live data).
-- NEXT: read `GET /api/admin/perf` (smoke@ admin, `scratchpad read_window.py` pattern) after a trading day of reports; rerun `scripts/proofs/first-visit-timing.mjs` and compare with the 352 ms HTML-first-byte baseline (entry script should start BEFORE the HTML); read next Wednesday's `/api/admin/measurement-window/latest` heavy_jobs for the next rush candidate.
+- Step 10 LIVE (production `bfae0e3fb6`, 15:44 CT; web serving it 15:50 CT). The first gate run on `660cd3a382` failed only on GitHub's artifact upload ("Failed to CreateArtifact", all 95+95 test files green); the next gate shipped it.
+- **Early Hints verified:** the site sends `Link:` preloads; Cloudflare answers with a 103 at ~79 ms; entry + 2 vendor chunks + CSS arrive with `initiatorType: early-hints`, 0 KB on the critical path, no double fetches. Fresh visit medians (7 runs): 103 at 79 ms, real HTML 168 ms, entry script done 182 ms (14 ms after the HTML; before: 102 ms after it), load 465 ms. Load's tail is the signed-out landing page's YouTube iframe_api + `/api/auth/me`, not hints.
+- ⛔ **Chrome's `responseStart` is the 103's first byte once hints exist**; the real page is `finalResponseHeadersStart`. `first-visit-timing.mjs` now prints both. The same trap was in the beacon: fixed in `c2f53f536a` (ttfb = finalResponseHeadersStart; failures = 5xx/408/429 only, a signed-out 401 is an answer). Mutation-checked 5/5.
+- **Beacon verified end to end:** a 25 s visit -> POST /api/perf/beacon 200 -> `GET /api/admin/perf` showed loads 1 (that one test visit, recorded before the ttfb fix, ttfb 89 = the 103). Read via `scratchpad read_perf.py` (smoke@ admin, SMOKE_* from User env).
+- NEXT: after a trading day read `/api/admin/perf` (member pages, desktop vs browser, API p95, countries); next Wednesday's `/api/admin/measurement-window/latest` heavy_jobs for the next rush candidate.
+- Owner's app: 0.1.9 downloaded 13:10 CT, still 0.1.7 until Restart is clicked or the app quits; then check the black box for `os-restart-registered`.
 - Waiting on the owner: Microsoft ID-check email; Massive licensing email; optional member count.
-- Verify the owner's installed app reached 0.1.9 and logs `os-restart-registered`.
 
 ## Status 2026-11-11 ~13:00 CT (newest): RELEASE TOOL + SHUTDOWN SAFETY SHIPPED IN 0.1.9
 
