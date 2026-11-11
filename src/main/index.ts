@@ -1,4 +1,6 @@
-import { app, autoUpdater, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, powerMonitor, session, Tray, webContents } from 'electron'
+import { app, autoUpdater, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, net, powerMonitor, session, Tray, webContents } from 'electron'
+import { randomBytes } from 'node:crypto'
+import { release } from 'node:os'
 import { join } from 'node:path'
 import { installShellProtocol, registerShellScheme } from './app-shell-protocol'
 import { registerBridgeHandlers } from './bridge/handlers'
@@ -17,6 +19,7 @@ import { nodeLogFs, nodeStoreFs } from './store-fs'
 import { createElectronPlacement } from './windows/placement-electron'
 import { createMainWindow } from './windows/main-window'
 import { followSiteTheme, installThemedTitleBars } from './windows/titlebar'
+import { createTelemetry, netCode, reasonCode } from './telemetry'
 
 app.setAppUserModelId(APP_USER_MODEL_ID)
 registerShellScheme() // must run before the app is ready
@@ -28,7 +31,36 @@ if (!app.requestSingleInstanceLock()) {
   // scrubbed log, so an exit or crash leaves something to read. See event-log.ts.
   crashReporter.start({ uploadToServer: false })
   const log = createEventLog({ dir: join(app.getPath('userData'), 'logs'), fs: nodeLogFs, now: () => Date.now() })
-  log.startSession(app.getVersion())
+  const session0 = log.startSession(app.getVersion())
+  // Telemetry (telemetry.ts): enum-only lifecycle events to the website. Off for any run with a remote
+  // debugging port or an inspector (every proof and Playwright launch has one; a member's launch never
+  // does) and when UCT_DESKTOP_TELEMETRY=0, so measurement runs never count as member machines.
+  const telemetryOn = process.env.UCT_DESKTOP_TELEMETRY !== '0' && !app.commandLine.hasSwitch('remote-debugging-port') &&
+    !process.argv.some((a) => a.startsWith('--remote-debugging-port') || a.startsWith('--inspect'))
+  const telemetry = telemetryOn
+    ? createTelemetry({
+        file: join(app.getPath('userData'), 'telemetry.json'),
+        fs: nodeStoreFs,
+        send: async (body) => {
+          await app.whenReady()
+          try {
+            const r = await net.fetch(`${ORIGIN}/api/desktop/event`, { method: 'POST', body, headers: { 'content-type': 'application/json' }, credentials: 'omit' })
+            if (!r.ok) return null
+            const j = (await r.json()) as { enabled?: unknown }
+            return { enabled: j?.enabled !== false }
+          } catch {
+            return null
+          }
+        },
+        version: app.getVersion(),
+        os: `${process.platform}-${release()}`,
+        now: () => Date.now(),
+        randomHex32: () => randomBytes(16).toString('hex'),
+        clock: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout) },
+      })
+    : undefined
+  telemetry?.noteLaunch()
+  if (session0.previousUnclean) telemetry?.report('unclean_exit')
   // Monitor only: it observes and never changes how an uncaught error behaves.
   process.on('uncaughtExceptionMonitor', (err, origin) =>
     log.record('main-error', { origin, message: err instanceof Error ? err.message : String(err), at: err instanceof Error ? (err.stack ?? '').split('\n')[1]?.trim() : undefined }),
@@ -38,8 +70,14 @@ if (!app.requestSingleInstanceLock()) {
   process.on('unhandledRejection', (reason) =>
     log.record('main-unhandled-rejection', { message: reason instanceof Error ? reason.message : String(reason) }),
   )
-  app.on('render-process-gone', (_e, wc, d) => log.record('render-process-gone', { reason: d.reason, exitCode: d.exitCode, main: wc.id === siteContents?.id }))
-  app.on('child-process-gone', (_e, d) => log.record('child-process-gone', { type: d.type, reason: d.reason, exitCode: d.exitCode, name: d.name ?? d.serviceName }))
+  app.on('render-process-gone', (_e, wc, d) => {
+    log.record('render-process-gone', { reason: d.reason, exitCode: d.exitCode, main: wc.id === siteContents?.id })
+    if (d.reason !== 'clean-exit') telemetry?.report('renderer_crash', reasonCode(d.reason))
+  })
+  app.on('child-process-gone', (_e, d) => {
+    log.record('child-process-gone', { type: d.type, reason: d.reason, exitCode: d.exitCode, name: d.name ?? d.serviceName })
+    if (d.type === 'GPU' && d.reason !== 'clean-exit') telemetry?.report('gpu_crash', reasonCode(d.reason))
+  })
   app.on('will-quit', () => log.endSession('quit'))
 
   let main: BrowserWindow | undefined
@@ -241,11 +279,35 @@ if (!app.requestSingleInstanceLock()) {
       log.endSession('session-end')
       quit.requestQuit('session-end')
     })
-    created.site.on('unresponsive', () => log.record('site-unresponsive'))
+    created.site.on('unresponsive', () => {
+      log.record('site-unresponsive')
+      telemetry?.report('site_unresponsive')
+    })
     created.site.on('responsive', () => log.record('site-responsive'))
     created.site.on('did-fail-load', (_e, code, description, url, isMainFrame) => {
-      if (isMainFrame && code !== -3) log.record('load-failed', { code, description, url }) // -3 is ERR_ABORTED
+      if (isMainFrame && code !== -3) {
+        log.record('load-failed', { code, description, url }) // -3 is ERR_ABORTED
+        telemetry?.report('load_failed', netCode(code))
+      }
     })
+    // One launch_ok per run, on the site's first successful main-frame load: the site's own origin
+    // with an HTTP status under 400 (the offline/error page loads into this same view and must not
+    // count). A failed send stays queued on disk and is retried every 15 minutes and on the next launch.
+    let launchReported = false
+    let lastStatus = 0
+    created.site.on('did-navigate', (_e, _url, httpResponseCode) => {
+      lastStatus = httpResponseCode
+    })
+    created.site.on('did-finish-load', () => {
+      if (launchReported || created.site.isDestroyed()) return
+      if (!created.site.getURL().startsWith(ORIGIN) || lastStatus <= 0 || lastStatus >= 400) return
+      launchReported = true
+      telemetry?.report('launch_ok')
+    })
+    if (telemetry) {
+      const retry = setInterval(() => void telemetry.flush(), 15 * 60_000)
+      app.once('will-quit', () => clearInterval(retry))
+    }
 
     const ses = session.fromPartition(PARTITION)
     Menu.setApplicationMenu(
