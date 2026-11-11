@@ -20,6 +20,9 @@ import { createElectronPlacement } from './windows/placement-electron'
 import { createMainWindow } from './windows/main-window'
 import { followSiteTheme, installThemedTitleBars } from './windows/titlebar'
 import { createTelemetry, netCode, reasonCode } from './telemetry'
+import { autoUpdater as appUpdater } from 'electron-updater'
+import { createAppUpdateHub } from './app-update'
+import { classifyUpdateError, createUpdateController, type UpdaterLike } from './updates'
 
 app.setAppUserModelId(APP_USER_MODEL_ID)
 registerShellScheme() // must run before the app is ready
@@ -35,8 +38,9 @@ if (!app.requestSingleInstanceLock()) {
   // Telemetry (telemetry.ts): enum-only lifecycle events to the website. Off for any run with a remote
   // debugging port or an inspector (every proof and Playwright launch has one; a member's launch never
   // does) and when UCT_DESKTOP_TELEMETRY=0, so measurement runs never count as member machines.
-  const telemetryOn = process.env.UCT_DESKTOP_TELEMETRY !== '0' && !app.commandLine.hasSwitch('remote-debugging-port') &&
-    !process.argv.some((a) => a.startsWith('--remote-debugging-port') || a.startsWith('--inspect'))
+  const debugRun = app.commandLine.hasSwitch('remote-debugging-port') ||
+    process.argv.some((a) => a.startsWith('--remote-debugging-port') || a.startsWith('--inspect'))
+  const telemetryOn = process.env.UCT_DESKTOP_TELEMETRY !== '0' && !debugRun
   const telemetry = telemetryOn
     ? createTelemetry({
         file: join(app.getPath('userData'), 'telemetry.json'),
@@ -60,6 +64,16 @@ if (!app.requestSingleInstanceLock()) {
       })
     : undefined
   telemetry?.noteLaunch()
+  // Updates (plan 7.1, updates.ts + app-update.ts): installed builds only, never a proof or debug run
+  // (a proof launches release-share/win-unpacked and must not install itself over the member's app),
+  // unless a proof asks for it with UCT_PROOF_UPDATES=1. UCT_DESKTOP_UPDATES=0 turns them off.
+  const updatesOn = app.isPackaged && process.env.UCT_DESKTOP_UPDATES !== '0' && (!debugRun || process.env.UCT_PROOF_UPDATES === '1')
+  const updateHub = createAppUpdateHub({
+    broadcast: (u) => {
+      for (const wc of webContents.getAllWebContents()) if (!wc.isDestroyed() && wc.getURL().startsWith(ORIGIN)) wc.send(CHANNELS.appUpdate, u)
+    },
+    report: (event, code) => telemetry?.report(event, code),
+  })
   if (session0.previousUnclean) telemetry?.report('unclean_exit')
   // Monitor only: it observes and never changes how an uncaught error behaves.
   process.on('uncaughtExceptionMonitor', (err, origin) =>
@@ -137,7 +151,36 @@ if (!app.requestSingleInstanceLock()) {
         if (name === 'signed_in') telemetry?.noteSignedIn()
         else if (name === 'desk_restored') telemetry?.noteDeskRestored()
       },
+      getAppUpdate: () => updateHub.get(),
+      // The normal quit first (onBeforeQuit, unsaved-text prompt, Stay cancels); will-quit installs.
+      onRestartToUpdate: () => {
+        if (!updateHub.requestRestart()) return
+        log.record('update-restart-requested')
+        residency?.quitRequested()
+        quit.requestQuit('quit')
+      },
     })
+    if (updatesOn) {
+      appUpdater.logger = null
+      appUpdater.on('error', (err: unknown) =>
+        log.record(`update-error-${classifyUpdateError(err)}`, { code: String((err as { code?: unknown })?.code ?? '').slice(0, 60) }),
+      )
+      appUpdater.on('update-not-available', () => log.record('update-none'))
+      appUpdater.on('update-available', () => log.record('update-available'))
+      appUpdater.on('update-downloaded', () => log.record('update-downloaded'))
+      const updates = createUpdateController({ updater: appUpdater as unknown as UpdaterLike, onState: (st) => updateHub.onState(st) })
+      const first = setTimeout(() => void updates.check(), 60_000)
+      const every = setInterval(() => void updates.check(), 4 * 60 * 60_000)
+      app.once('will-quit', () => {
+        clearTimeout(first)
+        clearInterval(every)
+        // Every window is closed and the member answered any unsaved-text prompt: install, then reopen.
+        if (updateHub.restartRequested()) {
+          log.record('update-install-and-restart')
+          appUpdater.quitAndInstall(true, true)
+        }
+      })
+    }
     installShellProtocol(session.fromPartition(PARTITION))
     // The tray is OFF until the website's idle mode (Task 22) and a working updater exist: a resident
     // app that cannot go idle would poll the server all night, and one that cannot update never would.

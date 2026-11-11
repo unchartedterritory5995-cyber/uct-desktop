@@ -5,8 +5,13 @@
 // * Download in the background, install on a real quit. With tray residency a real quit is rare, so
 //   the residency module also installs when the desk is hidden and idle outside the extended session
 //   (residency.ts). This controller itself NEVER calls quitAndInstall: a trader is never interrupted.
-// * NOT YET WIRED: index.ts still uses Electron's built-in autoUpdater for the before-quit-for-update
-//   hook only; the electron-updater client, the feed (Task 27) and signing come before any install.
+// * WIRED 2026-11-11 (0.1.6): index.ts drives electron-updater through this controller; the feed is the
+//   public GitHub repo uct-desktop-releases (release files only); app-update.ts offers the restart to the
+//   website. Until the owner's Azure signing lands the build is unsigned, so electron-updater checks the
+//   download's sha512 from latest.yml over HTTPS but no publisher; once signed, electron-builder writes
+//   publisherName into app-update.yml and wire createSignatureVerifier below so a signed app refuses any
+//   unsigned update (fail closed). Electron's built-in autoUpdater still carries before-quit-for-update:
+//   electron-updater emits that event on it.
 // * Never downgrade, including after a channel change (electron-updater sets allowDowngrade when the
 //   channel is assigned, so it is put back every time).
 // * A downloaded version that the feed stops offering (halted, pulled) is not installed on quit.
@@ -44,6 +49,10 @@ export function classifyUpdateError(err: unknown): ErrorClass {
   if (/SIGNATURE|PUBLISHER/i.test(code) || /signature|publisher/i.test(message)) return 'signature'
   if (/sha512|checksum|integrity/i.test(message)) return 'integrity'
   if (/net::|ENOTFOUND|ECONNRESET|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|socket hang up/i.test(message)) return 'network'
+  // electron-updater's HTTP failures carry code HTTP_ERROR_<status> (measured 2026-11-11: a missing
+  // GitHub feed is HTTP_ERROR_404). A server error is the network's problem; any other status is the feed's.
+  const http = /^HTTP_ERROR_(\d{3})$/.exec(code)
+  if (http) return Number(http[1]) >= 500 ? 'network' : 'feed'
   if (/CHANNEL_FILE|LATEST_VERSION/i.test(code) || /channel|\.yml|HttpError/i.test(message)) return 'feed'
   return 'other'
 }

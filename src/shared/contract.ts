@@ -2,7 +2,7 @@
 // test/surface.test.ts keeps this file and that JSON in step. No method here accepts a URL.
 
 export const BRIDGE_VERSION = 1
-export const CAPABILITIES = ['window-state', 'before-quit', 'desk-visibility', 'site-events'] as const
+export const CAPABILITIES = ['window-state', 'before-quit', 'desk-visibility', 'site-events', 'app-update'] as const
 
 /** The only names the website may report (telemetry plan 5.1). Anything else is dropped, in the
  * preload AND in the main process. The shell turns them into enum-only telemetry events. */
@@ -16,6 +16,9 @@ export const CHANNELS = {
   beforeQuit: 'uct:before-quit',
   ackBeforeQuit: 'uct:ack-before-quit',
   reportEvent: 'uct:report-event',
+  appUpdate: 'uct:app-update',
+  getAppUpdate: 'uct:get-app-update',
+  restartToUpdate: 'uct:restart-to-update',
   retry: 'uct:retry',
   barBack: 'uct:bar-back',
 } as const
@@ -29,6 +32,8 @@ export type WindowState = 'normal' | 'maximized' | 'minimized' | 'fullscreen' | 
 /** The WHOLE desk: 'hidden' only when every app window is hidden or minimized (pop-outs count). */
 export type DeskVisibility = 'visible' | 'hidden'
 export type Unsubscribe = () => void
+/** A downloaded app update waiting to install, or null when there is none (or it was withdrawn). */
+export type AppUpdate = { version: string } | null
 
 export interface UctDesktop {
   bridgeVersion: number
@@ -39,6 +44,11 @@ export interface UctDesktop {
   onBeforeQuit(cb: () => void): Unsubscribe
   ackBeforeQuit(): void
   reportEvent(name: SiteEvent): void
+  /** The update waiting now (a page that loads after the download asks instead of waiting). */
+  getAppUpdate(): Promise<AppUpdate>
+  onAppUpdate(cb: (update: AppUpdate) => void): Unsubscribe
+  /** The member clicked "Restart to update": the shell runs the normal quit, then installs. No arguments. */
+  restartToUpdate(): void
 }
 
 const FEATURE_METHODS: Record<string, string[]> = {
@@ -46,6 +56,7 @@ const FEATURE_METHODS: Record<string, string[]> = {
   'desk-visibility': ['onDeskVisibility'],
   'before-quit': ['onBeforeQuit', 'ackBeforeQuit'],
   'site-events': ['reportEvent'],
+  'app-update': ['getAppUpdate', 'onAppUpdate', 'restartToUpdate'],
 }
 
 /** True only when the bridge exists, lists the capability, and has the functions that back it. */

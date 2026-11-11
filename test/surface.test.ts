@@ -115,3 +115,26 @@ describe('reportEvent in the preload', () => {
     expect(hasDesktopFeature('site-events', b)).toBe(true)
   })
 })
+
+describe('app-update in the preload', () => {
+  it('passes the shell update through toAppUpdate, sends restart with no arguments, and unsubscribes', async () => {
+    const { ipc, sent, listeners } = fakeIpc()
+    ipc.invoke = async () => ({ version: '0.1.7', file: 'C:/secret/path.exe' })
+    const b = buildBridge(ipc, O, O)!
+    expect(await b.getAppUpdate()).toEqual({ version: '0.1.7' })
+    const got: unknown[] = []
+    const off = b.onAppUpdate((u) => got.push(u))
+    for (const l of listeners.get(CHANNELS.appUpdate)!) { l({}, { version: '0.1.8' }); l({}, null); l({}, { version: 'x' }) }
+    expect(got).toEqual([{ version: '0.1.8' }, null, null])
+    off()
+    expect(listeners.get(CHANNELS.appUpdate)!.size).toBe(0)
+    b.restartToUpdate()
+    expect(sent).toEqual([CHANNELS.restartToUpdate])
+    expect(hasDesktopFeature('app-update', b)).toBe(true)
+  })
+  it('a failed ask reads as no update', async () => {
+    const { ipc } = fakeIpc()
+    ipc.invoke = async () => { throw new Error('no handler') }
+    expect(await buildBridge(ipc, O, O)!.getAppUpdate()).toBeNull()
+  })
+})

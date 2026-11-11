@@ -10,7 +10,7 @@ await build({
   platform: 'node',
   format: 'cjs',
   target: 'node22',
-  external: ['electron', 'koffi'],
+  external: ['electron', 'koffi', 'electron-updater'], // runtime dependencies, packaged from node_modules
   sourcemap: true,
   define: { __BUILD_KIND__: JSON.stringify(kind) },
 })

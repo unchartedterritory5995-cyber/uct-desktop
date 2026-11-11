@@ -7,3 +7,4 @@ release-share/
 .env.*
 proof-output/
 .claude/
+release-next/

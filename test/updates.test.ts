@@ -132,6 +132,14 @@ describe('classifyUpdateError', () => {
     expect(classifyUpdateError(new Error('Cannot find channel "beta.yml" update info: HttpError: 404'))).toBe('feed')
     expect(classifyUpdateError('weird')).toBe('other')
   })
+  it('reads electron-updater HTTP_ERROR_<status> codes: 4xx is the feed, 5xx the network (measured: a missing feed is 404)', () => {
+    const http = (status: string) => Object.assign(new Error('404 Not Found'), { code: `HTTP_ERROR_${status}` })
+    expect(classifyUpdateError(http('404'))).toBe('feed')
+    expect(classifyUpdateError(http('403'))).toBe('feed')
+    expect(classifyUpdateError(http('500'))).toBe('network')
+    expect(classifyUpdateError(http('503'))).toBe('network')
+    expect(classifyUpdateError(Object.assign(new Error('x'), { code: 'HTTP_ERROR_' }))).toBe('other')
+  })
 })
 
 describe('createSignatureVerifier (fail closed)', () => {

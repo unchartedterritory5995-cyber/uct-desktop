@@ -77,3 +77,34 @@ describe('reportEvent (site events for telemetry)', () => {
     expect(got).toEqual([])
   })
 })
+
+describe('app-update handlers', () => {
+  function rig(pending: { version: string } | null) {
+    const handlers = new Map<string, (e: never, ...a: unknown[]) => unknown>()
+    const ipc: IpcMainLike = {
+      handle: (c, l) => void handlers.set(c, l as never),
+      on: (c, l) => void handlers.set(c, l as never),
+    }
+    let restarts = 0
+    registerBridgeHandlers(ipc, {
+      origin: O, getInfo: () => ({ appVersion: '1', platform: 'win32' }), onAckBeforeQuit: () => {},
+      getAppUpdate: () => pending, onRestartToUpdate: () => void restarts++,
+    })
+    return { get: handlers.get(CHANNELS.getAppUpdate)!, restart: handlers.get(CHANNELS.restartToUpdate)!, restarts: () => restarts }
+  }
+  it('answers the waiting update only to a trusted sender', () => {
+    const { get } = rig({ version: '0.1.7' })
+    expect(get(top(`${O}/charts`) as never)).toEqual({ version: '0.1.7' })
+    expect(() => get(child(`${O}/`) as never)).toThrow()
+    expect(() => get(top('https://evil.example/') as never)).toThrow()
+    expect(rig(null).get(top(`${O}/`) as never)).toBeNull()
+  })
+  it('restarts only for a trusted sender', () => {
+    const r = rig({ version: '0.1.7' })
+    r.restart(child(`${O}/`) as never)
+    r.restart(top('https://evil.example/') as never)
+    expect(r.restarts()).toBe(0)
+    r.restart(top(`${O}/`) as never)
+    expect(r.restarts()).toBe(1)
+  })
+})

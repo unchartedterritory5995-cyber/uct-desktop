@@ -1,4 +1,4 @@
-import { BRIDGE_VERSION, CAPABILITIES, CHANNELS, SITE_EVENTS, type DeskVisibility, type DesktopInfo, type UctDesktop, type Unsubscribe, type WindowState } from '../shared/contract'
+import { BRIDGE_VERSION, CAPABILITIES, CHANNELS, SITE_EVENTS, type AppUpdate, type DeskVisibility, type DesktopInfo, type UctDesktop, type Unsubscribe, type WindowState } from '../shared/contract'
 
 export interface IpcRendererLike {
   invoke(channel: string, ...args: unknown[]): Promise<unknown>
@@ -13,6 +13,12 @@ function subscribe(ipc: IpcRendererLike, channel: string, cb: (...args: unknown[
   return () => {
     ipc.removeListener(channel, listener)
   }
+}
+
+/** Only `{ version: string }` or null reaches the page, whatever the main process sent. */
+export function toAppUpdate(u: unknown): AppUpdate {
+  const v = u && typeof u === 'object' ? (u as { version?: unknown }).version : undefined
+  return typeof v === 'string' && /^\d+\.\d+\.\d+$/.test(v) ? { version: v } : null
 }
 
 /** The error page's own tiny bridge: just `retry`, and only on the app-shell origin. */
@@ -42,5 +48,8 @@ export function buildBridge(ipc: IpcRendererLike, locationOrigin: string, appOri
     reportEvent: (name) => {
       if (typeof name === 'string' && (SITE_EVENTS as readonly string[]).includes(name)) ipc.send(CHANNELS.reportEvent, name)
     },
+    getAppUpdate: () => ipc.invoke(CHANNELS.getAppUpdate).then(toAppUpdate, () => null),
+    onAppUpdate: (cb) => subscribe(ipc, CHANNELS.appUpdate, (u) => cb(toAppUpdate(u))),
+    restartToUpdate: () => ipc.send(CHANNELS.restartToUpdate),
   }
 }
