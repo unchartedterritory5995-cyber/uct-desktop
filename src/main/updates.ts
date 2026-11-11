@@ -20,7 +20,8 @@
 // * min_shell_version is checked at launch only, and fails OPEN: an outage must never lock anyone out.
 
 export const REPEAT_FAILURES = 3
-export const STABLE_INSTALLER_URL = 'https://updates.uctintelligence.com/stable/UCT-Intelligence-Setup.exe'
+// The page that always offers the newest installer (the update feed's own releases page).
+export const STABLE_INSTALLER_URL = 'https://github.com/unchartedterritory5995-cyber/uct-desktop-releases/releases/latest'
 
 export interface UpdateInfoLike {
   version?: string
