@@ -14,6 +14,12 @@
 // bucket); `stage vX 100` widens it to everyone; `halt vX` (0) stops it. Installs that already
 // downloaded a halted version see it withdrawn and never install it (app-update.ts). A version that is
 // already installed is fixed by publishing a higher one, never by going back.
+//
+// MEASURED 2026-11-11: a stage/halt change reaches every app within ~5 minutes, not instantly. GitHub's
+// edge caches the /releases/download/<tag>/latest.yml redirect (Age ~260 s, X-Cache HIT); an app that
+// checked 1 minute after a widen still read the old 0%, the same app 6 minutes later read 100%. During
+// those minutes an app can still download a halted version; it is withdrawn at its next check, and it
+// only ever installs on quit. For an emergency: halt FIRST, then publish the fix as a higher version.
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -113,7 +119,7 @@ async function stage(tag, percent) {
   writeFileSync(file, next)
   gh(['release', 'upload', tag, file, '-R', REPO, '--clobber'])
   await readBack(`${FEED}/download/${tag}/latest.yml`, parseLatest(next))
-  say(percent === 0 ? `HALTED ${tag}: no install will download it; pending downloads are withdrawn` : `${tag} now offered to ${percent}% of installs`)
+  say(percent === 0 ? `HALTED ${tag}: within ~5 minutes no install will download it (GitHub edge cache); pending downloads are withdrawn at their next check` : `${tag} now offered to ${percent}% of installs (every app sees it within ~5 minutes)`)
 }
 
 async function status() {

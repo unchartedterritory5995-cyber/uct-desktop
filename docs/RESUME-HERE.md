@@ -41,7 +41,14 @@ Last updated 2026-11-10 ~21:35 CT by an agent session. Read this first after a r
 - Census tests on master (swallowedFetch, jsonFetcher, persistence, symbolLink, formatters, dataGrid) already fail from other sessions' drift; not ours.
 - The intro film plays once a week per device (not every launch): no change needed.
 
-## Status 2026-11-11 ~12:30 CT (newest): CODE SIGNING IN MICROSOFT REVIEW
+## Status 2026-11-11 ~13:00 CT (newest): RELEASE TOOL + SHUTDOWN SAFETY SHIPPED IN 0.1.9
+
+- **Release only through `node scripts/release.mjs`**: `publish [--stage=N] [--dry]` (refuses unless on main, clean, pushed, higher version, `npm run check` green, no secret pattern in dist; reads the feed back anonymously and fails on any mismatch), `stage vX N`, `halt vX`, `status`. Rules in `scripts/release-lib.mjs`, tested and mutation-checked (12/12).
+- **Measured:** stage/halt reach every app within ~5 minutes (GitHub edge caches the latest.yml redirect, Age ~260 s). Proven live on v0.1.9: published at 0% -> a 0.1.7 app saw update-none; staged to 100% -> 1 min later still none (cache), 6 min later update-available + the prompt.
+- **Windows Update safety (0.1.9):** session-end -> `updates.hold()` + `updateHub.sessionEnding()`, so nothing installs during a shutdown; `os-restart.ts` registers with Restart Manager (`--restarted-by-windows`, flags NO_CRASH|NO_HANG) so Windows reopens UCT after an update reboot; skipped in debug/proof runs. Verify on the owner's installed app after it updates: black box should show `os-restart-registered`.
+- Feed now: 0.1.9 at 100%.
+
+## Status 2026-11-11 ~12:30 CT: CODE SIGNING IN MICROSOFT REVIEW
 
 - Azure (portal signed in as the SHARED unchartedterritory5995 account, owner's choice), directory **Patrick** (unchartedterritory5995gmail.onmicrosoft.com), subscription **Azure subscription** fe3a0166-9385-4719-8484-c4b2cf7497c4 (pay-as-you-go).
 - Microsoft.CodeSigning registered. Artifact Signing account **uctintelligence**, resource group **uct-signing**, East US, Basic ($9.99/mo), endpoint `https://eus.codesigning.azure.net/`. Owner has the Identity Verifier role on it.
