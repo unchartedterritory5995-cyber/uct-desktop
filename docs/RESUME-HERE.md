@@ -1,10 +1,10 @@
 # Resume here (desktop speed and reliability work)
 
-Last updated 2026-11-10 ~14:20 CT by an agent session. Read this first after a restart or a switch.
+Last updated 2026-11-10 ~21:35 CT by an agent session. Read this first after a restart or a switch.
 
 ## Plans (local, not in this repo)
 
-- **THE PLAN (single authority, v1.2):** `C:\Users\Patrick\reports\UCT desktop app FINAL plan - speed and reliability.md` (backup beside it)
+- **THE PLAN (single authority, v1.5):** `C:\Users\Patrick\reports\UCT desktop app FINAL plan - speed and reliability.md` (backup beside it)
 - Measurements and findings log: `C:\Users\Patrick\reports\UCT desktop charts speed analysis.md` (sections 3a and 3b hold today's real-board numbers)
 - History: `UCT desktop app speed and reliability plan.md`. Overall program: `UCT desktop app implementation plan v2.md`
 
@@ -41,7 +41,15 @@ Last updated 2026-11-10 ~14:20 CT by an agent session. Read this first after a r
 - Census tests on master (swallowedFetch, jsonFetcher, persistence, symbolLink, formatters, dataGrid) already fail from other sessions' drift; not ours.
 - The intro film plays once a week per device (not every launch): no change needed.
 
-## Session 2026-11-10 night (newest)
+## Session 2026-11-10 late night (newest, read this first)
+
+- **Correction:** the website's desk idle mode (`dbccfdab56`) and the drawings-store byte cut (`46d873cdf8`) were NOT on master as the night notes said; they sat unpushed on `speed-7-idle`. Re-landed as `3e6a399402` + `ea1f37f8ca`. Always verify with `git merge-base --is-ancestor <sha> origin/master`.
+- **Website master now carries, in one deploy batch:** `ff89106cb9` (CDN switch, integrity tool, CLAUDE.md rules), `2b201b5dc7` (telemetry door `POST /api/desktop/event` + hourly halt/digest job + ledger row `DESKTOP_TELEMETRY_ENABLED`), `3e6a399402` (desk idle mode), `ea1f37f8ca` (Notebook first open 2,241,882 B, budget 2,260,793). The deploy gate was stuck behind GitHub's 20-job limit for an hour.
+- **Shell `main` = `b3207bd`** (desk-visibility + telemetry merged; not yet released). `src/main/telemetry.ts`: enum-only events (launch_ok, load_failed net_<n>, unclean_exit, renderer_crash, gpu_crash, site_unresponsive, update_installed), disk queue, stops on `enabled:false`, OFF for any run with a remote debugging port or inspector (all proofs) and `UCT_DESKTOP_TELEMETRY=0`. Not yet wired: first_signin, desk_restored, update_* (updater not wired).
+- Proofs on the new packaged build: blackbox 5/5 (`UCT_PROOF_EXE=release/win-unpacked/...`; the script's default is the OLD `release-share` build), desk-visibility 4/4. **Still to run after deploy:** `node scripts/proofs/telemetry-proof.mjs` (needs SMOKE_EMAIL/SMOKE_PASSWORD; live server counts before/after).
+- **After the deploy lands:** (1) CDN: `railway variables --service web --set ASSETS_NO_TRANSFORM_ENABLED=0`, confirm a fresh boot, `python tools/cdn_asset_integrity.py --bust` must be all intact and br/gzip, purge `/assets` at Cloudflare, re-measure. (2) telemetry proof. (3) bump shell to 0.1.4, `npm run pack:installer`, private release, ask the owner before DMing Bracco.
+
+## Session 2026-11-10 night
 
 - **Website, on master:** adaptive chart frame loops; bars-pack ingest one window at a time and only after the first chart; site-wide endless-animation rail; Options Flow summary bounded; desktop idle mode (`desk-visibility`, shell `9def6ac` on branch `desk-visibility`, needs merge + a shell release); drawings store off Notebook first open (-10.4 KB; budget NOT raised). Master's gate was red from another session's Screener change; fixed by re-pin `e477cddce5` (SAT-1 capture fixed by #1045).
 - **Cloudflare:** token "UCT compression" (env `CLOUDFLARE_API_TOKEN`, User scope; Response Compression edit, Cache Purge, Zone + Zone Settings read; expires 2027-02-09). Root cause: the edge decompresses our precompressed assets and `no-transform` forbids re-compressing, so members got 1,114 files / 23.9 MB uncompressed. Compression Rule now: `/assets/*` brotli or gzip only, never zstd.
