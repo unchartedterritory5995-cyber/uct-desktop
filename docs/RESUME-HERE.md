@@ -41,6 +41,13 @@ Last updated 2026-11-10 ~14:20 CT by an agent session. Read this first after a r
 - Census tests on master (swallowedFetch, jsonFetcher, persistence, symbolLink, formatters, dataGrid) already fail from other sessions' drift; not ours.
 - The intro film plays once a week per device (not every launch): no change needed.
 
+## Session 2026-11-10 night (newest)
+
+- **Website, on master:** adaptive chart frame loops; bars-pack ingest one window at a time and only after the first chart; site-wide endless-animation rail; Options Flow summary bounded; desktop idle mode (`desk-visibility`, shell `9def6ac` on branch `desk-visibility`, needs merge + a shell release); drawings store off Notebook first open (-10.4 KB; budget NOT raised). Master's gate was red from another session's Screener change; fixed by re-pin `e477cddce5` (SAT-1 capture fixed by #1045).
+- **Cloudflare:** token "UCT compression" (env `CLOUDFLARE_API_TOKEN`, User scope; Response Compression edit, Cache Purge, Zone + Zone Settings read; expires 2027-02-09). Root cause: the edge decompresses our precompressed assets and `no-transform` forbids re-compressing, so members got 1,114 files / 23.9 MB uncompressed. Compression Rule now: `/assets/*` brotli or gzip only, never zstd.
+- **In flight:** commit `ff89106cb9` (switch `ASSETS_NO_TRANSFORM_ENABLED`, default on = no change; `tools/cdn_asset_integrity.py`; speed rules in CLAUDE.md). After it deploys: `railway variables --service web --set ASSETS_NO_TRANSFORM_ENABLED=0`, confirm a fresh boot, run `python tools/cdn_asset_integrity.py --bust` (must be 1,114/1,114 intact and compressed), then purge `/assets` at Cloudflare. Rollback: set it to 1, redeploy, purge.
+- Owner-only still open: Azure signing, the reference PC, one monitor at 150% (a Windows setting Claude may not change), and three business answers.
+
 ## Next steps, in order
 
 1. `npm run check` on the branch (typecheck, vitest, build). Fix what fails.
