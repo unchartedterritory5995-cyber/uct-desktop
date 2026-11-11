@@ -41,11 +41,12 @@ Last updated 2026-11-10 ~21:35 CT by an agent session. Read this first after a r
 - Census tests on master (swallowedFetch, jsonFetcher, persistence, symbolLink, formatters, dataGrid) already fail from other sessions' drift; not ours.
 - The intro film plays once a week per device (not every launch): no change needed.
 
-## NEXT SESSION START HERE (2026-11-11 close)
+## NEXT SESSION START HERE (2026-11-11, after Step 10)
 
-- Owner approved **plan Step 10, infrastructure speed** (plan file, section Step 10): start with **10.1 real-user speed measurement** (~1 h), then 10.2 Cloudflare edge cache for shared market data, 10.3 instant open (Early Hints + service-worker shell cache), 10.4 server region, 10.5 heavy jobs off web. Each needs a before/after number.
-- Waiting on the owner: Microsoft ID-check email (shared Gmail) -> walk through; Massive licensing email (draft in reports/); optional member count (needs explicit OK for a prod read).
-- Verify the owner's installed app reached 0.1.9 and its black box shows `os-restart-registered`.
+- Step 10 done the same day (plan file, 'Step 10 results'): 10.1 real-user beacon, 10.3 Early Hints, 10.5 rush gate SHIPPED; 10.4 no change (already us-east4); 10.2 deliberately not now (paid or live data).
+- NEXT: read `GET /api/admin/perf` (smoke@ admin, `scratchpad read_window.py` pattern) after a trading day of reports; rerun `scripts/proofs/first-visit-timing.mjs` and compare with the 352 ms HTML-first-byte baseline (entry script should start BEFORE the HTML); read next Wednesday's `/api/admin/measurement-window/latest` heavy_jobs for the next rush candidate.
+- Waiting on the owner: Microsoft ID-check email; Massive licensing email; optional member count.
+- Verify the owner's installed app reached 0.1.9 and logs `os-restart-registered`.
 
 ## Status 2026-11-11 ~13:00 CT (newest): RELEASE TOOL + SHUTDOWN SAFETY SHIPPED IN 0.1.9
 
