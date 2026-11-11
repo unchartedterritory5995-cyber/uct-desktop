@@ -44,7 +44,8 @@ Last updated 2026-11-10 ~21:35 CT by an agent session. Read this first after a r
 ## Status 2026-11-11 ~00:10 CT (newest)
 
 - VERIFIED LIVE: /charts idle rAF 60->0; /dashboard idle layouts 60->0; new-member first minute main thread max 65%->8% (pack worker); recovery after a network drop: auth +2 ms, streams +117 ms, banner clears +513 ms (`recovery-proof.mjs` 4/4; it failed on the old build). CDN 1,121/1,121 Brotli both variants.
-- Shell 0.1.4 released privately, NOT sent to Bracco (owner OK needed).
+- Shell **0.1.5** released privately (`desktop-0.1.5`; adds site-events: first_signin, desk_restored), proofs blackbox/telemetry/recovery all pass on it. NOT sent to Bracco (owner OK needed); send 0.1.5, not 0.1.4. Website half: `speed-18-site-events` commit, pushing behind another session's deploy.
+- Proof runs with `MSYS_NO_PATHCONV=1` need `UCT_PROOF_EXE` as a Windows path (`cygpath -w`).
 - NEXT: market-hours page-cost on /live-massive and /options-flow (opens windows on display 5 during trading: ask the owner first); telemetry first_signin/desk_restored need a bridge method (contract change + shell 0.1.5); Step 9 nightly perf gate (standing scheduled task: owner OK); Step 7 updater (Azure).
 
 ## Status 2026-11-10 ~22:40 CT
