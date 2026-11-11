@@ -49,7 +49,7 @@ Last updated 2026-11-10 ~21:35 CT by an agent session. Read this first after a r
 - **Proven on the owner's installed app** (`update-e2e.mjs --installed --via-bridge --expect=0.1.7`): found 15:09:58, downloaded 15:10:01 (blockmap delta), Restart 15:10:04.34, closed 15:10:04.48, reopened as 0.1.7 15:10:22 (18 s). The proof's first "closed after 301 s" was the DevTools socket hanging; it now watches processes.
 - Releases: 0.1.6 (first with updates), 0.1.7 (version bump, the first delivered by the updater). Owner's PC on 0.1.7. Bracco DM'd 0.1.7 (msg 1570095421697818808), his last manual install.
 - Market-hours page-cost 09:47 ET: /live-massive busy 0.4%, /options-flow 0.3%, rAF 0 (light table 17 min after the open).
-- NEXT: after 11:05 ET confirm the toast in production (publish 0.1.8, run a no-install toast check on release-next 0.1.7); full member rollout needs Azure signing.
+- DONE 10:10 CT: toast live in production (site build index-BxiemL39.js); 0.1.8 published; `update-proof --toast` on the 0.1.7 build: downloaded 0.1.8, prompt "A new version of the UCT app is ready. Restart to update / Later" shown, nothing installed. Owner's app (0.1.7) will offer 0.1.8 on its next check. NEXT: full member rollout needs Azure signing (then wire createSignatureVerifier).
 
 ## Status 2026-11-11 ~07:20 CT
 
