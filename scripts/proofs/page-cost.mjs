@@ -1,7 +1,7 @@
 // What each page costs while a member just LOOKS at it: main-thread busy share, script time, layouts
 // and style recalcs per second, requests per minute, rAF callbacks per second, DOM size and JS heap.
 // Real app, signed in as the bench member, one page at a time, settle then measure.
-// Usage: node scripts/proofs/page-cost.mjs [electron|chrome] [--settle=10] [--measure=30] [/route ...]
+// Usage: node scripts/proofs/page-cost.mjs [electron|chrome] [--settle=10] [--measure=30] [--out=file.json] [/route ...]
 // After hours numbers show the idle floor (loops and polls); repeat in market hours for live load.
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
@@ -17,6 +17,7 @@ const routes = args.filter((a) => a.startsWith('/'))
 const ROUTES = routes.length ? routes : ['/options-flow', '/live-massive', '/flow-scoreboard', '/charts', '/dashboard']
 const PORT = target === 'electron' ? 9351 : 9352
 const DISPLAY = opt('display', 5) // index into proof-output/displays.json; must be a display nobody covers
+const OUT = (args.find((a) => a.startsWith('--out=')) || '').slice(6) || join('proof-output', `results-page-cost-${target}.json`)
 
 // Counts rAF callbacks the PAGE schedules (wraps requestAnimationFrame once per document).
 // Callers are attributed by the first app frame of the scheduling stack (assets file:line).
@@ -93,7 +94,7 @@ try {
     for (const [k, n] of rafBy) console.log(`${''.padEnd(20)}rAF ${String(n).padStart(5)} x ${k}`)
   }
 } finally {
-  writeFileSync(join('proof-output', `results-page-cost-${target}.json`), JSON.stringify(results, null, 1))
+  writeFileSync(OUT, JSON.stringify(results, null, 1))
   if (app) app.close?.()
 }
 process.exit(0)
