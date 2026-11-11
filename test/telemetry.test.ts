@@ -148,3 +148,26 @@ describe('telemetry', () => {
     expect(reasonCode('weird-new-reason')).toBeUndefined()
   })
 })
+
+describe('site events', () => {
+  it('first_signin is sent once per install, across runs', async () => {
+    const a = harness()
+    a.t.noteSignedIn()
+    a.t.noteSignedIn()
+    await a.runTimers()
+    expect(events(a.sent[0]).map((e) => e.event)).toEqual(['first_signin'])
+    const b = harness({ files: a.fs.files })
+    b.t.noteSignedIn()
+    expect(b.t.queued()).toBe(0)
+  })
+  it('desk_restored is sent once per run', async () => {
+    const a = harness()
+    a.t.noteDeskRestored()
+    a.t.noteDeskRestored()
+    await a.runTimers()
+    expect(events(a.sent[0]).map((e) => e.event)).toEqual(['desk_restored'])
+    const b = harness({ files: a.fs.files })
+    b.t.noteDeskRestored()
+    expect(b.t.queued()).toBe(1)
+  })
+})

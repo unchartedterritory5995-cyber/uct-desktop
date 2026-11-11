@@ -49,3 +49,31 @@ describe('registerBridgeHandlers', () => {
     expect(acks).toBe(1)
   })
 })
+
+describe('reportEvent (site events for telemetry)', () => {
+  function rig() {
+    const handlers = new Map<string, (e: never, ...a: unknown[]) => unknown>()
+    const ipc: IpcMainLike = {
+      handle: (c, l) => void handlers.set(c, l as never),
+      on: (c, l) => void handlers.set(c, l as never),
+    }
+    const got: string[] = []
+    registerBridgeHandlers(ipc, { origin: O, getInfo: () => ({ appVersion: '1', platform: 'win32' }), onAckBeforeQuit: () => {}, onSiteEvent: (n) => void got.push(n) })
+    return { report: handlers.get(CHANNELS.reportEvent)!, got }
+  }
+  it('passes only a listed name from a trusted sender', () => {
+    const { report, got } = rig()
+    report(top(`${O}/`) as never, 'signed_in')
+    report(top(`${O}/`) as never, 'desk_restored')
+    expect(got).toEqual(['signed_in', 'desk_restored'])
+  })
+  it('drops other names, non-strings and untrusted senders (the preload is not the only sender)', () => {
+    const { report, got } = rig()
+    report(top(`${O}/`) as never, 'launch_ok')
+    report(top(`${O}/`) as never, { toString: () => 'signed_in' })
+    report(top(`${O}/`) as never, 'signed_in; drop')
+    report(child(`${O}/`) as never, 'signed_in')
+    report(top('https://evil.example/') as never, 'desk_restored')
+    expect(got).toEqual([])
+  })
+})

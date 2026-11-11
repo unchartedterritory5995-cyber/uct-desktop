@@ -133,6 +133,10 @@ if (!app.requestSingleInstanceLock()) {
       origin: ORIGIN,
       getInfo: () => ({ appVersion: app.getVersion(), platform: process.platform }),
       onAckBeforeQuit: () => quit.ack(),
+      onSiteEvent: (name) => {
+        if (name === 'signed_in') telemetry?.noteSignedIn()
+        else if (name === 'desk_restored') telemetry?.noteDeskRestored()
+      },
     })
     installShellProtocol(session.fromPartition(PARTITION))
     // The tray is OFF until the website's idle mode (Task 22) and a working updater exist: a resident

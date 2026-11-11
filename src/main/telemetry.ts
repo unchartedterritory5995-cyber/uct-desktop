@@ -36,6 +36,7 @@ interface State {
   install: string
   lastVersion: string | null
   queue: QueuedEvent[]
+  signedInOnce?: boolean
 }
 
 export type SendResult = { enabled: boolean } | null // null: the request failed, keep the queue
@@ -82,7 +83,7 @@ export function createTelemetry(deps: TelemetryDeps) {
       const raw = JSON.parse(deps.fs.readFile(deps.file))
       const install = typeof raw?.install === 'string' && INSTALL_RE.test(raw.install) ? raw.install : deps.randomHex32()
       const queue = Array.isArray(raw?.queue) ? (raw.queue as QueuedEvent[]).filter((e) => e && typeof e.event === 'string').slice(-MAX_QUEUE) : []
-      return { install, lastVersion: typeof raw?.lastVersion === 'string' ? raw.lastVersion : null, queue }
+      return { install, lastVersion: typeof raw?.lastVersion === 'string' ? raw.lastVersion : null, queue, signedInOnce: raw?.signedInOnce === true }
     } catch {
       return { install: deps.randomHex32(), lastVersion: null, queue: [] }
     }
@@ -129,6 +130,21 @@ export function createTelemetry(deps: TelemetryDeps) {
     }
   }
 
+  /** The site reports a signed-in member: first_signin is sent once per install, ever. */
+  function noteSignedIn(): void {
+    if (state.signedInOnce) return
+    state.signedInOnce = true
+    report('first_signin')
+  }
+
+  let deskRestoredSent = false
+  /** The site re-opened a saved desk at launch: once per run. */
+  function noteDeskRestored(): void {
+    if (deskRestoredSent) return
+    deskRestoredSent = true
+    report('desk_restored')
+  }
+
   async function flush(): Promise<void> {
     if (stopped || inFlight || state.queue.length === 0) return
     inFlight = true
@@ -161,6 +177,8 @@ export function createTelemetry(deps: TelemetryDeps) {
   return {
     report,
     noteLaunch,
+    noteSignedIn,
+    noteDeskRestored,
     flush,
     stop,
     isStopped: () => stopped,

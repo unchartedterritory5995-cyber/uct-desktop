@@ -1,4 +1,4 @@
-import { BRIDGE_VERSION, CAPABILITIES, CHANNELS, type DeskVisibility, type DesktopInfo, type UctDesktop, type Unsubscribe, type WindowState } from '../shared/contract'
+import { BRIDGE_VERSION, CAPABILITIES, CHANNELS, SITE_EVENTS, type DeskVisibility, type DesktopInfo, type UctDesktop, type Unsubscribe, type WindowState } from '../shared/contract'
 
 export interface IpcRendererLike {
   invoke(channel: string, ...args: unknown[]): Promise<unknown>
@@ -38,5 +38,9 @@ export function buildBridge(ipc: IpcRendererLike, locationOrigin: string, appOri
     onDeskVisibility: (cb) => subscribe(ipc, CHANNELS.deskVisibility, (s) => cb(s as DeskVisibility)),
     onBeforeQuit: (cb) => subscribe(ipc, CHANNELS.beforeQuit, () => cb()),
     ackBeforeQuit: () => ipc.send(CHANNELS.ackBeforeQuit),
+    // Only a name from SITE_EVENTS crosses; anything else (including a non-string) is dropped here.
+    reportEvent: (name) => {
+      if (typeof name === 'string' && (SITE_EVENTS as readonly string[]).includes(name)) ipc.send(CHANNELS.reportEvent, name)
+    },
   }
 }

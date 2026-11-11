@@ -101,3 +101,17 @@ describe('hasDesktopFeature', () => {
     expect(hasDesktopFeature('window-state')).toBe(false)
   })
 })
+
+describe('reportEvent in the preload', () => {
+  it('sends only a listed name, and nothing else crosses', () => {
+    const { ipc, sent } = fakeIpc()
+    const b = buildBridge(ipc, O, O)!
+    b.reportEvent('signed_in')
+    b.reportEvent('desk_restored')
+    ;(b.reportEvent as (n: unknown) => void)('first_signin')
+    ;(b.reportEvent as (n: unknown) => void)(42)
+    ;(b.reportEvent as (n: unknown) => void)('signed_in ')
+    expect(sent).toEqual([CHANNELS.reportEvent, CHANNELS.reportEvent])
+    expect(hasDesktopFeature('site-events', b)).toBe(true)
+  })
+})

@@ -2,7 +2,12 @@
 // test/surface.test.ts keeps this file and that JSON in step. No method here accepts a URL.
 
 export const BRIDGE_VERSION = 1
-export const CAPABILITIES = ['window-state', 'before-quit', 'desk-visibility'] as const
+export const CAPABILITIES = ['window-state', 'before-quit', 'desk-visibility', 'site-events'] as const
+
+/** The only names the website may report (telemetry plan 5.1). Anything else is dropped, in the
+ * preload AND in the main process. The shell turns them into enum-only telemetry events. */
+export const SITE_EVENTS = ['signed_in', 'desk_restored'] as const
+export type SiteEvent = (typeof SITE_EVENTS)[number]
 
 export const CHANNELS = {
   getInfo: 'uct:get-info',
@@ -10,6 +15,7 @@ export const CHANNELS = {
   deskVisibility: 'uct:desk-visibility',
   beforeQuit: 'uct:before-quit',
   ackBeforeQuit: 'uct:ack-before-quit',
+  reportEvent: 'uct:report-event',
   retry: 'uct:retry',
   barBack: 'uct:bar-back',
 } as const
@@ -32,12 +38,14 @@ export interface UctDesktop {
   onDeskVisibility(cb: (state: DeskVisibility) => void): Unsubscribe
   onBeforeQuit(cb: () => void): Unsubscribe
   ackBeforeQuit(): void
+  reportEvent(name: SiteEvent): void
 }
 
 const FEATURE_METHODS: Record<string, string[]> = {
   'window-state': ['onWindowState'],
   'desk-visibility': ['onDeskVisibility'],
   'before-quit': ['onBeforeQuit', 'ackBeforeQuit'],
+  'site-events': ['reportEvent'],
 }
 
 /** True only when the bridge exists, lists the capability, and has the functions that back it. */
