@@ -41,7 +41,14 @@ Last updated 2026-11-10 ~21:35 CT by an agent session. Read this first after a r
 - Census tests on master (swallowedFetch, jsonFetcher, persistence, symbolLink, formatters, dataGrid) already fail from other sessions' drift; not ours.
 - The intro film plays once a week per device (not every launch): no change needed.
 
-## Session 2026-11-10 late night (newest, read this first)
+## Status 2026-11-10 ~22:40 CT (newest)
+
+- DONE: CDN compression live (Chrome first visit /charts 6.75 -> 2.42 MB); telemetry door live + proof 4/4; shell **0.1.4 released privately** (`desktop-0.1.4` on uct-large-files, SHA-256 77383C45...0C50), **not yet sent to Bracco: ask the owner first**.
+- DEPLOYING: website `793bb7bacf` (overlays rest when still via `watchChartView`; integrity tool checks the Origin variant) plus `3e6a399402` idle mode and `ea1f37f8ca` bytes. After it lands: `MSYS_NO_PATHCONV=1 node scripts/proofs/page-cost.mjs electron --warm=90 --display=5 /charts` must show rAF/s near 0.
+- NEXT: (1) find the /dashboard 60 layouts/s CSS cause (`cold-layout-probe.mjs`, run with the window on display 5; it lacks placement, add it); (2) pack ingest off the main thread (cold first minute 65-95% busy); (3) market-hours page-cost on /live-massive and /options-flow; (4) add the Origin note to CLAUDE.md rule 9 with the next website push.
+- Proof windows: ALWAYS on an uncovered display. The primary display may be under a full-screen window, and then nothing draws.
+
+## Session 2026-11-10 late night
 
 - **Correction:** the website's desk idle mode (`dbccfdab56`) and the drawings-store byte cut (`46d873cdf8`) were NOT on master as the night notes said; they sat unpushed on `speed-7-idle`. Re-landed as `3e6a399402` + `ea1f37f8ca`. Always verify with `git merge-base --is-ancestor <sha> origin/master`.
 - **Website master now carries, in one deploy batch:** `ff89106cb9` (CDN switch, integrity tool, CLAUDE.md rules), `2b201b5dc7` (telemetry door `POST /api/desktop/event` + hourly halt/digest job + ledger row `DESKTOP_TELEMETRY_ENABLED`), `3e6a399402` (desk idle mode), `ea1f37f8ca` (Notebook first open 2,241,882 B, budget 2,260,793). The deploy gate was stuck behind GitHub's 20-job limit for an hour.

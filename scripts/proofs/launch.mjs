@@ -113,6 +113,36 @@ $wantIconic = ${command === 6 ? '$true' : '$false'}
     return Number(execFileSync('powershell.exe', ['-NoProfile', '-Command', script], { encoding: 'utf8' }).trim())
   }
 
+  // Moves this run's main window (largest visible window of the child process) to x,y with size w,h.
+  // A window under a full-screen window on another app is not drawn at all (no frames, no rAF), so
+  // every measurement must put its window on a display the owner is not covering.
+  function placeMainWindow(x, y, w, h) {
+    const script = `
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class M {
+  public struct R { public int L, T, X, B; }
+  public delegate bool E(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out R r);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(E e, IntPtr l);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint p);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int c);
+  [DllImport("user32.dll")] public static extern bool MoveWindow(IntPtr h, int x, int y, int w, int hh, bool r);
+}
+'@
+$script:best = [IntPtr]::Zero; $script:bestArea = 0
+[M]::EnumWindows({ param($h, $l)
+  $p = 0; [void][M]::GetWindowThreadProcessId($h, [ref]$p)
+  if ($p -eq ${child.pid} -and [M]::IsWindowVisible($h)) {
+    $r = New-Object M+R; [void][M]::GetWindowRect($h, [ref]$r); $area = ($r.X - $r.L) * ($r.B - $r.T)
+    if ($area -gt $script:bestArea) { $script:bestArea = $area; $script:best = $h }
+  }
+  $true }, [IntPtr]::Zero) | Out-Null
+if ($script:bestArea -gt 0) { [void][M]::ShowWindow($script:best, 9); [void][M]::MoveWindow($script:best, ${x}, ${y}, ${w}, ${h}, $true); 1 } else { 0 }`
+    return Number(execFileSync('powershell.exe', ['-NoProfile', '-Command', script], { encoding: 'utf8' }).trim())
+  }
+
   async function findPage() {
     const deadline = Date.now() + 60000
     while (Date.now() < deadline) {
@@ -169,7 +199,7 @@ $wantIconic = ${command === 6 ? '$true' : '$false'}
   }
 
   try {
-    return { child, showMainWindow, close, exited: () => exit, ...(await boot()) }
+    return { child, showMainWindow, placeMainWindow, close, exited: () => exit, ...(await boot()) }
   } catch (e) {
     await close()
     throw e

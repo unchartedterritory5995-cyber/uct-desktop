@@ -3,7 +3,7 @@
 // Real app, signed in as the bench member, one page at a time, settle then measure.
 // Usage: node scripts/proofs/page-cost.mjs [electron|chrome] [--settle=10] [--measure=30] [/route ...]
 // After hours numbers show the idle floor (loops and polls); repeat in market hours for live load.
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { BASE, sleep, startApp } from './launch.mjs'
 
@@ -16,6 +16,7 @@ const WARM_S = opt('warm', 0) // sit on /charts first so one-time pack downloads
 const routes = args.filter((a) => a.startsWith('/'))
 const ROUTES = routes.length ? routes : ['/options-flow', '/live-massive', '/flow-scoreboard', '/charts', '/dashboard']
 const PORT = target === 'electron' ? 9351 : 9352
+const DISPLAY = opt('display', 5) // index into proof-output/displays.json; must be a display nobody covers
 
 // Counts rAF callbacks the PAGE schedules (wraps requestAnimationFrame once per document).
 // Callers are attributed by the first app frame of the scheduling stack (assets file:line).
@@ -27,6 +28,18 @@ const results = { target, startedUtc: new Date().toISOString(), settleS: SETTLE_
 try {
   app = await startApp(target, PORT, [])
   const { c, run } = app
+  const d = JSON.parse(readFileSync(join('proof-output', 'displays.json'), 'utf8'))[DISPLAY]
+  if (!d) throw new Error(`no display ${DISPLAY}`)
+  if (target === 'electron') app.placeMainWindow(d.x + 40, d.y + 40, 1500, 950)
+  else {
+    const page = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).find((t) => t.type === 'page')
+    void page // Chrome: placed by the same Win32 call (largest window of the process)
+    app.placeMainWindow(d.x + 40, d.y + 40, 1500, 950)
+  }
+  // Refuse to measure an undrawn window: under a full-screen window it produces no frames and every
+  // number reads as idle.
+  const FRAMES = `new Promise(res=>{let n=0,on=true;const f=()=>{n++;if(on)requestAnimationFrame(f)};requestAnimationFrame(f);setTimeout(()=>{on=false;res(n)},1000)})`
+  const drawn = async () => (await run(FRAMES)) >= 20
   await c.send('Performance.enable', { timeDomain: 'timeTicks' })
   await c.send('Network.enable')
   let requests = []
@@ -40,6 +53,7 @@ try {
   for (const route of ROUTES) {
     await c.send('Page.navigate', { url: `${BASE}${route}` })
     await sleep(SETTLE_S * 1000)
+    if (!(await drawn())) throw new Error(`${route}: the window is not being drawn (covered or off-screen); refusing to measure`)
     await run(RAF_PROBE)
     await run('window.__rafBy={}')
     const r0 = await run('window.__rafCount')
