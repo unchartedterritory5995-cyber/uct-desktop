@@ -14,6 +14,8 @@ import { sleep, startApp } from './launch.mjs'
 
 process.env.UCT_PROOF_UPDATES = '1'
 const DISPLAY = Number((process.argv.find((a) => a.startsWith('--display=')) || '--display=2').split('=')[1])
+// --toast: the feed offers a newer version than this build; the site's prompt must appear (never clicked).
+const TOAST = process.argv.includes('--toast')
 const rows = []
 const row = (id, pass, detail) => { rows.push({ id, pass }); console.log(`${pass ? 'PASS' : 'FAIL'} ${id}: ${detail}`) }
 const profile = mkdtempSync(join(tmpdir(), 'uct-update-proof-'))
@@ -45,6 +47,16 @@ try {
   }
   const alive = await run('1+1').then((v) => v === 2, () => false)
   row('U-check', events.length > 0 && alive, `black box: ${events.join(', ') || 'no update event in 150 s'}; app alive: ${alive}`)
+  if (TOAST) {
+    // The feed offers a newer version than this build: the site must show the prompt. Never clicked,
+    // and close() force-kills (no 'quit' event), so install-on-quit never runs.
+    let text = ''
+    for (let i = 0; i < 36 && !text; i++) {
+      text = await run(`(document.querySelector('[data-testid="app-update-toast"]')||{}).textContent||''`).catch(() => '')
+      if (!text) await sleep(5000)
+    }
+    row('U-toast', /new version of the UCT app is ready/i.test(text) && /Restart to update/.test(text), text ? `"${text}"` : 'no prompt within 3 min')
+  }
 } finally {
   if (app) await app.close?.()
 }
