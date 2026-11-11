@@ -41,7 +41,15 @@ Last updated 2026-11-10 ~21:35 CT by an agent session. Read this first after a r
 - Census tests on master (swallowedFetch, jsonFetcher, persistence, symbolLink, formatters, dataGrid) already fail from other sessions' drift; not ours.
 - The intro film plays once a week per device (not every launch): no change needed.
 
-## Status 2026-11-11 ~10:20 CT (newest): ONE-CLICK UPDATES LIVE
+## Status 2026-11-11 ~12:30 CT (newest): CODE SIGNING IN MICROSOFT REVIEW
+
+- Azure (portal signed in as the SHARED unchartedterritory5995 account, owner's choice), directory **Patrick** (unchartedterritory5995gmail.onmicrosoft.com), subscription **Azure subscription** fe3a0166-9385-4719-8484-c4b2cf7497c4 (pay-as-you-go).
+- Microsoft.CodeSigning registered. Artifact Signing account **uctintelligence**, resource group **uct-signing**, East US, Basic ($9.99/mo), endpoint `https://eus.codesigning.azure.net/`. Owner has the Identity Verifier role on it.
+- Identity validation: Organization, Public, **Uncharted Territory LLC** (Minnesota, active), emails patrick@ / contact@uctintelligence.com (Cloudflare Email Routing -> the shared Gmail). Subject preview `CN=Uncharted Territory LLC, O=Uncharted Territory LLC, S=Minnesota, C=US`. Status In Progress (submitted ~12:25 CT). NEXT: status goes Action Required -> owner does the photo-ID check (AU10TIX + Microsoft Authenticator, link expires in 7 days) -> Microsoft reviews 1-20 business days.
+- After Completed: create certificate profile (Public Trust) on uctintelligence; give the signing identity the Artifact Signing Certificate Profile Signer role; sign from this PC with an interactive Azure login (no stored secret); electron-builder `win.azureSignOptions` {publisherName: 'Uncharted Territory LLC', endpoint, certificateProfileName, codeSigningAccountName: 'uctintelligence'}; then wire `createSignatureVerifier` (expectedPublisher 'Uncharted Territory LLC') and keep accepting the unsigned->signed transition for one release.
+- Note: a click on Microsoft's 'Review and accept the latest terms of use' banner accepted the updated Artifact Signing terms in one step (owner told).
+
+## Status 2026-11-11 ~10:20 CT: ONE-CLICK UPDATES LIVE
 
 - **Feed:** PUBLIC repo `unchartedterritory5995-cyber/uct-desktop-releases` (owner created it 2026-11-11; release files only). electron-builder `publish: github` writes `app-update.yml`; releases are tagged `vX.Y.Z` with the exe, `.blockmap` and `latest.yml`. Release flow: bump version, `npm run build && npx electron-builder --win nsis --publish never --config.directories.output=release-next`, secret-scan `dist/`, `gh release create vX.Y.Z <exe> <blockmap> latest.yml -R unchartedterritory5995-cyber/uct-desktop-releases`, check `releases/latest/download/latest.yml` anonymously. Pull a bad version: delete its release (the app then reports withdrawn and nothing installs).
 - **Shell:** `src/main/app-update.ts` (hub) + `updates.ts` controller + index.ts wiring; capability `app-update` (getAppUpdate / onAppUpdate / restartToUpdate). Restart = the NORMAL quit first, then `quitAndInstall(true, true)` at will-quit. Updates off in debug runs unless `UCT_PROOF_UPDATES=1`; `UCT_DESKTOP_UPDATES=0` turns them off. Unsigned: sha512 checked, no publisher; wire `createSignatureVerifier` when Azure signing lands.
