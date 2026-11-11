@@ -41,7 +41,15 @@ Last updated 2026-11-10 ~21:35 CT by an agent session. Read this first after a r
 - Census tests on master (swallowedFetch, jsonFetcher, persistence, symbolLink, formatters, dataGrid) already fail from other sessions' drift; not ours.
 - The intro film plays once a week per device (not every launch): no change needed.
 
-## Status 2026-11-11 ~00:10 CT (newest)
+## Status 2026-11-11 ~07:20 CT (newest)
+
+- Owner said yes to all three (07:50 ET). **0.1.5 sent to Bracco** by bot DM (msg 1570059379561201755); the message discloses the new anonymous crash reports (0.1.3's said nothing is sent).
+- **Nightly speed check LIVE**: Task Scheduler `UCT Desktop Nightly Speed Check`, daily 23:40 CT, `scripts/nightly/run-nightly.cmd` under the heavy lock -> `perf-nightly.mjs`. Members' build (release-share); monitors tried 2,4,0,5 (5 usually has the trading platform maximized, so the window is undrawn). Baseline = median of the last 7 passing nights; over a limit -> recheck; posts to ops (`DISCORD_WEBHOOK_URL`, read from Railway at send time via the linked `uct-dashboard` dir, never stored) only when seen twice; first night, then every 7th of a lasting slowdown. 3 blind nights in a row -> one notice. Intended heavier page: `node scripts/nightly/perf-nightly.mjs --accept`. Output `proof-output/nightly/`. Fired once via Start-ScheduledTask 07:12: pass, baseline seeded (busy 0.7-1.5%, rAF 0 on all five pages).
+- Market-hours page-cost on /live-massive and /options-flow: one-off waiter fires 09:47 ET on display 2 (`--measure=60`), output `proof-output/results-page-cost-market-2026-11-11.json`.
+- Auto-update: `updates.ts` rules exist and are tested, but nothing is wired until signing (Step 7, Azure). Website changes reach every member without a reinstall.
+- Heredoc trap hit three more times today: a backslash-n or a Windows path inside a bash heredoc loses its backslash. Write JS/Python files with the Write tool.
+
+## Status 2026-11-11 ~00:10 CT
 
 - VERIFIED LIVE: /charts idle rAF 60->0; /dashboard idle layouts 60->0; new-member first minute main thread max 65%->8% (pack worker); recovery after a network drop: auth +2 ms, streams +117 ms, banner clears +513 ms (`recovery-proof.mjs` 4/4; it failed on the old build). CDN 1,121/1,121 Brotli both variants.
 - Shell **0.1.5** released privately (`desktop-0.1.5`; adds site-events: first_signin, desk_restored), proofs blackbox/telemetry/recovery all pass on it. NOT sent to Bracco (owner OK needed); send 0.1.5, not 0.1.4. Website half: `speed-18-site-events` commit, pushing behind another session's deploy.
