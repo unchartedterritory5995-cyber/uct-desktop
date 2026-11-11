@@ -34,6 +34,18 @@ describe('createUpdateController', () => {
     expect(u.allowDowngrade).toBe(false)
   })
 
+  it('hold() (Windows ending the session) stops install-on-quit, including for a download that lands after it', () => {
+    const u = fakeUpdater()
+    const c = createUpdateController({ updater: u, onState: () => {} })
+    u.emit('update-downloaded', { version: '0.2.0' })
+    expect(u.autoInstallOnAppQuit).toBe(true)
+    c.hold()
+    expect(u.autoInstallOnAppQuit).toBe(false)
+    u.emit('update-downloaded', { version: '0.2.1' })
+    expect(u.autoInstallOnAppQuit).toBe(false)
+    expect(u.installs).toBe(0)
+  })
+
   it('never calls quitAndInstall by itself, whatever happens', async () => {
     const u = fakeUpdater()
     const c = createUpdateController({ updater: u, onState: () => {} })

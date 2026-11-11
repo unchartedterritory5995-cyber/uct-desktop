@@ -23,6 +23,7 @@ import { createTelemetry, netCode, reasonCode } from './telemetry'
 import { autoUpdater as appUpdater } from 'electron-updater'
 import { createAppUpdateHub } from './app-update'
 import { classifyUpdateError, createUpdateController, type UpdaterLike } from './updates'
+import { loadRegisterRestart, registerOsRestart, restartedByWindows } from './os-restart'
 
 app.setAppUserModelId(APP_USER_MODEL_ID)
 registerShellScheme() // must run before the app is ready
@@ -68,6 +69,7 @@ if (!app.requestSingleInstanceLock()) {
   // (a proof launches release-share/win-unpacked and must not install itself over the member's app),
   // unless a proof asks for it with UCT_PROOF_UPDATES=1. UCT_DESKTOP_UPDATES=0 turns them off.
   const updatesOn = app.isPackaged && process.env.UCT_DESKTOP_UPDATES !== '0' && (!debugRun || process.env.UCT_PROOF_UPDATES === '1')
+  let updates: ReturnType<typeof createUpdateController> | undefined
   const updateHub = createAppUpdateHub({
     broadcast: (u) => {
       for (const wc of webContents.getAllWebContents()) if (!wc.isDestroyed() && wc.getURL().startsWith(ORIGIN)) wc.send(CHANNELS.appUpdate, u)
@@ -129,6 +131,9 @@ if (!app.requestSingleInstanceLock()) {
   autoUpdater.on('before-quit-for-update', () => quit.beforeQuitForUpdate())
 
   void app.whenReady().then(() => {
+    // Windows Update restarts: reopen UCT after the reboot, like a browser (never after a crash or hang).
+    if (restartedByWindows(process.argv)) log.record('launch-after-windows-restart')
+    registerOsRestart({ register: loadRegisterRestart(), enabled: app.isPackaged && !debugRun, record: (e, f) => log.record(e, f) })
     for (const ev of ['suspend', 'resume', 'lock-screen', 'unlock-screen', 'shutdown'] as const) powerMonitor.on(ev as 'suspend', () => log.record(`power-${ev}`))
     installThemedTitleBars()
     const consent = createConsentStore({ file: join(app.getPath('userData'), 'microphone-consent.json'), fs: nodeStoreFs })
@@ -168,9 +173,9 @@ if (!app.requestSingleInstanceLock()) {
       appUpdater.on('update-not-available', () => log.record('update-none'))
       appUpdater.on('update-available', () => log.record('update-available'))
       appUpdater.on('update-downloaded', () => log.record('update-downloaded'))
-      const updates = createUpdateController({ updater: appUpdater as unknown as UpdaterLike, onState: (st) => updateHub.onState(st) })
-      const first = setTimeout(() => void updates.check(), 60_000)
-      const every = setInterval(() => void updates.check(), 4 * 60 * 60_000)
+      updates = createUpdateController({ updater: appUpdater as unknown as UpdaterLike, onState: (st) => updateHub.onState(st) })
+      const first = setTimeout(() => void updates?.check(), 60_000)
+      const every = setInterval(() => void updates?.check(), 4 * 60 * 60_000)
       app.once('will-quit', () => {
         clearTimeout(first)
         clearInterval(every)
@@ -322,6 +327,9 @@ if (!app.requestSingleInstanceLock()) {
       }
     })
     win.on('session-end', () => {
+      // Never install an update while Windows is shutting down or restarting (os-restart.ts).
+      updateHub.sessionEnding()
+      updates?.hold()
       residency?.quitRequested()
       log.endSession('session-end')
       quit.requestQuit('session-end')

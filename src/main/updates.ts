@@ -63,6 +63,8 @@ export function createUpdateController(deps: { updater: UpdaterLike; onState(sta
   let pending: string | null = null
   let failClass: ErrorClass | null = null
   let failCount = 0
+  // Windows is ending the session: never install on the way out (os-restart.ts). Lasts for this run.
+  let held = false
 
   const keepSafe = () => {
     updater.allowDowngrade = false
@@ -88,7 +90,7 @@ export function createUpdateController(deps: { updater: UpdaterLike; onState(sta
   updater.on('update-downloaded', (info: UpdateInfoLike) => {
     succeeded()
     pending = info?.version ?? null
-    updater.autoInstallOnAppQuit = true
+    updater.autoInstallOnAppQuit = !held
     if (pending) onState({ kind: 'downloaded', version: pending })
   })
   updater.on('update-available', (info: UpdateInfoLike) => {
@@ -119,6 +121,11 @@ export function createUpdateController(deps: { updater: UpdaterLike; onState(sta
     setChannel(channel: string): void {
       updater.channel = channel
       keepSafe()
+    },
+    /** Windows is shutting down or restarting: hold any install until an ordinary quit on a later run. */
+    hold(): void {
+      held = true
+      updater.autoInstallOnAppQuit = false
     },
   }
 }

@@ -21,6 +21,7 @@ export interface AppUpdateHubDeps {
 export function createAppUpdateHub(deps: AppUpdateHubDeps) {
   let pending: AppUpdate = null
   let restart = false
+  let sessionEnding = false
   return {
     /** The update controller's state changes (updates.ts). */
     onState(state: UpdateState): void {
@@ -48,7 +49,11 @@ export function createAppUpdateHub(deps: AppUpdateHubDeps) {
     },
     /** At will-quit: start the installer with run-after (true) or leave it to install-on-quit (false). */
     restartRequested(): boolean {
-      return restart && pending !== null
+      return restart && pending !== null && !sessionEnding
+    },
+    /** Windows is ending the session: no install on the way out, even one the member asked for. */
+    sessionEnding(): void {
+      sessionEnding = true
     },
   }
 }

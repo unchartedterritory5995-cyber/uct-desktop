@@ -51,6 +51,16 @@ describe('app-update hub', () => {
     expect(h.restartRequested()).toBe(true)
   })
 
+  it('Windows ending the session cancels a requested restart: no installer during a shutdown', () => {
+    const { h } = hub()
+    h.onState({ kind: 'downloaded', version: '0.1.7' })
+    h.requestRestart()
+    expect(h.restartRequested()).toBe(true)
+    h.sessionEnding()
+    expect(h.restartRequested()).toBe(false)
+    expect(h.get()).toEqual({ version: '0.1.7' }) // still offered next run
+  })
+
   it('repeated failures are reported with their class and offer nothing', () => {
     const { h, sent, reports } = hub()
     h.onState({ kind: 'failed-repeatedly', errorClass: 'network', downloadUrl: 'x' })
