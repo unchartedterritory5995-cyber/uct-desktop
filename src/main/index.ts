@@ -1,10 +1,11 @@
-import { app, autoUpdater, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, powerMonitor, session, Tray } from 'electron'
+import { app, autoUpdater, BrowserWindow, clipboard, crashReporter, dialog, ipcMain, Menu, nativeImage, powerMonitor, session, Tray, webContents } from 'electron'
 import { join } from 'node:path'
 import { installShellProtocol, registerShellScheme } from './app-shell-protocol'
 import { registerBridgeHandlers } from './bridge/handlers'
 import { APP_USER_MODEL_ID, ORIGIN, PARTITION, TRAY_RESIDENCY_ENABLED } from './config'
 import { buildDiagnostics } from './diagnostics'
 import { createEventLog } from './event-log'
+import { createDeskVisibilityReporter } from './desk-visibility'
 import { buildMenuTemplate, performReset, resetStorages } from './menu'
 import { installPolicy } from './policy/install'
 import { createQuitController, focusExistingWindow } from './quit'
@@ -98,6 +99,29 @@ if (!app.requestSingleInstanceLock()) {
     installShellProtocol(session.fromPartition(PARTITION))
     // The tray is OFF until the website's idle mode (Task 22) and a working updater exist: a resident
     // app that cannot go idle would poll the server all night, and one that cannot update never would.
+    // Desk visibility for the website's idle mode: 'hidden' only when every app window is hidden or
+    // minimized (a minimized main window with boards up on other monitors is still a visible desk).
+    // Sent to every page on the site's origin: the main site and any stand-alone Terminal pop-out.
+    const sitePages = () => webContents.getAllWebContents().filter((wc) => !wc.isDestroyed() && wc.getURL().startsWith(ORIGIN))
+    const desk = createDeskVisibilityReporter({
+      windows: () => BrowserWindow.getAllWindows(),
+      send: (state) => {
+        log.record('desk-visibility', { state })
+        for (const wc of sitePages()) wc.send(CHANNELS.deskVisibility, state)
+      },
+    })
+    const deskUpdate = () => setImmediate(() => desk.update())
+    app.on('browser-window-created', (_e, w) => {
+      for (const ev of ['show', 'hide', 'minimize', 'restore', 'closed'] as const) w.on(ev as 'show', deskUpdate)
+      deskUpdate()
+    })
+    app.on('web-contents-created', (_e, wc) => {
+      wc.on('did-finish-load', () => {
+        const state = desk.current()
+        if (state && !wc.isDestroyed() && wc.getURL().startsWith(ORIGIN)) wc.send(CHANNELS.deskVisibility, state)
+      })
+    })
+
     const startHidden = TRAY_RESIDENCY_ENABLED && launchedHidden(process.argv) && !openWhenReady
     const created = createMainWindow({ stayHidden: () => (residency ? residency.isHidden() : startHidden) })
     const win = created.win

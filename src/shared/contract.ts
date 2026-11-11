@@ -2,11 +2,12 @@
 // test/surface.test.ts keeps this file and that JSON in step. No method here accepts a URL.
 
 export const BRIDGE_VERSION = 1
-export const CAPABILITIES = ['window-state', 'before-quit'] as const
+export const CAPABILITIES = ['window-state', 'before-quit', 'desk-visibility'] as const
 
 export const CHANNELS = {
   getInfo: 'uct:get-info',
   windowState: 'uct:window-state',
+  deskVisibility: 'uct:desk-visibility',
   beforeQuit: 'uct:before-quit',
   ackBeforeQuit: 'uct:ack-before-quit',
   retry: 'uct:retry',
@@ -19,6 +20,8 @@ export interface DesktopInfo {
 }
 
 export type WindowState = 'normal' | 'maximized' | 'minimized' | 'fullscreen' | 'hidden'
+/** The WHOLE desk: 'hidden' only when every app window is hidden or minimized (pop-outs count). */
+export type DeskVisibility = 'visible' | 'hidden'
 export type Unsubscribe = () => void
 
 export interface UctDesktop {
@@ -26,12 +29,14 @@ export interface UctDesktop {
   capabilities: string[]
   getInfo(): Promise<DesktopInfo>
   onWindowState(cb: (state: WindowState) => void): Unsubscribe
+  onDeskVisibility(cb: (state: DeskVisibility) => void): Unsubscribe
   onBeforeQuit(cb: () => void): Unsubscribe
   ackBeforeQuit(): void
 }
 
 const FEATURE_METHODS: Record<string, string[]> = {
   'window-state': ['onWindowState'],
+  'desk-visibility': ['onDeskVisibility'],
   'before-quit': ['onBeforeQuit', 'ackBeforeQuit'],
 }
 

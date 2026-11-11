@@ -1,4 +1,4 @@
-import { BRIDGE_VERSION, CAPABILITIES, CHANNELS, type DesktopInfo, type UctDesktop, type Unsubscribe, type WindowState } from '../shared/contract'
+import { BRIDGE_VERSION, CAPABILITIES, CHANNELS, type DeskVisibility, type DesktopInfo, type UctDesktop, type Unsubscribe, type WindowState } from '../shared/contract'
 
 export interface IpcRendererLike {
   invoke(channel: string, ...args: unknown[]): Promise<unknown>
@@ -35,6 +35,7 @@ export function buildBridge(ipc: IpcRendererLike, locationOrigin: string, appOri
     capabilities: [...CAPABILITIES],
     getInfo: () => ipc.invoke(CHANNELS.getInfo) as Promise<DesktopInfo>,
     onWindowState: (cb) => subscribe(ipc, CHANNELS.windowState, (s) => cb(s as WindowState)),
+    onDeskVisibility: (cb) => subscribe(ipc, CHANNELS.deskVisibility, (s) => cb(s as DeskVisibility)),
     onBeforeQuit: (cb) => subscribe(ipc, CHANNELS.beforeQuit, () => cb()),
     ackBeforeQuit: () => ipc.send(CHANNELS.ackBeforeQuit),
   }
