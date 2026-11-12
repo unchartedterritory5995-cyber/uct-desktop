@@ -53,6 +53,15 @@ const CHARTS = [
   { id: 'soak-qqq', sym: 'QQQ', tf: '5', x: 0, y: 10 },
   { id: 'soak-aapl', sym: 'AAPL', tf: '15', x: 12, y: 10 },
 ]
+/** Now as New York wall-clock time, expressed as UTC epoch seconds (the charts' bar-time clock). */
+function etWallSeconds(now) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York', hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  }).formatToParts(now).map((x) => [x.type, x.value]))
+  return Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second) / 1000
+}
+
 const layout = { widgets: CHARTS.map((c) => ({ id: c.id, type: 'chart', color: 'N', x: c.x, y: c.y, w: 12, h: 10, opts: { tf: c.tf } })), cols: 24, version: 1 }
 const groups = { A: 'SPY', B: null, C: null, D: null, ...Object.fromEntries(CHARTS.map((c) => [`N:${c.id}`, c.sym])) }
 const tfSeconds = { 1: 60, 5: 300, 15: 900 }
@@ -106,7 +115,11 @@ function judgeCharts(charts, now) {
     if (bar.close !== st.lastClose) { st.lastClose = bar.close; st.lastChangeAt = now.getTime() }
     const row = { time: bar.time, close: bar.close }
     if (c.tf !== 'D' && typeof bar.time === 'number') {
-      row.ageS = Math.round(now.getTime() / 1000 - bar.time)
+      // The charts store intraday bar times as New York WALL CLOCK written as UTC seconds (so the
+      // axis reads ET). Comparing them to real UTC read every bar as ~5 h old: the 2026-11-12
+      // market day reported 1m/5m/15m charts "NOT LIVE" all session while each sample's bar
+      // advanced. Age is measured on the same clock the bar uses.
+      row.ageS = Math.round(etWallSeconds(now) - bar.time)
       if (rth && row.ageS > tfSeconds[c.tf] + 120) { row.stale = true; st.staleMinutes += SAMPLE_MS / 60000 }
     }
     if (c.tf === 'D' && rth && now.getTime() - st.lastChangeAt > 300_000) { row.quiet = true; st.quietMinutes += SAMPLE_MS / 60000 }

@@ -34,6 +34,9 @@ export function connect(url) {
       if (m.id) {
         const p = pending.get(m.id)
         pending.delete(m.id)
+        // A reply can outlive its request (the socket was cleared, or the caller gave up). On
+        // 2026-11-12 one such reply crashed the 6-hour soak at 3.5 h: `p` was undefined.
+        if (!p) return
         if (m.error) p.no(new Error(m.error.message))
         else p.ok(m.result)
       } else listeners.forEach((l) => l(m))
