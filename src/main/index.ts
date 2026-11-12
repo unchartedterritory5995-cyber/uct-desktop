@@ -17,12 +17,15 @@ import { CHANNELS } from '../shared/contract'
 import { createConsentStore, createMicrophoneGate } from './policy/microphone'
 import { nodeLogFs, nodeStoreFs } from './store-fs'
 import { createElectronPlacement } from './windows/placement-electron'
-import { createMainWindow } from './windows/main-window'
+import { createMainWindow, MAIN_WINDOW_NAME } from './windows/main-window'
 import { followSiteTheme, installThemedTitleBars } from './windows/titlebar'
 import { createTelemetry, netCode, reasonCode } from './telemetry'
 import { autoUpdater as appUpdater } from 'electron-updater'
 import { createAppUpdateHub } from './app-update'
 import { classifyUpdateError, createUpdateController, type UpdaterLike } from './updates'
+import { createLaunchTiming } from './launch-timing'
+import { parseBounds } from './windows/main-window'
+import { performance } from 'node:perf_hooks'
 import { loadRegisterRestart, registerOsRestart, restartedByWindows } from './os-restart'
 
 app.setAppUserModelId(APP_USER_MODEL_ID)
@@ -36,12 +39,36 @@ if (!app.requestSingleInstanceLock()) {
   crashReporter.start({ uploadToServer: false })
   const log = createEventLog({ dir: join(app.getPath('userData'), 'logs'), fs: nodeLogFs, now: () => Date.now() })
   const session0 = log.startSession(app.getVersion())
+  // Main-process stalls in the first 20 s of a launch (the network stack waits on this thread for the
+  // cookie key, so a blocked main thread blocks the first page request). Black box only.
+  {
+    let last = performance.now()
+    const lagTimer = setInterval(() => {
+      const now = performance.now()
+      if (now - last > 250) log.record('main-stall', { at: Math.round(last), ms: Math.round(now - last) })
+      last = now
+      if (now > 20_000) clearInterval(lagTimer)
+    }, 50)
+  }
+  // Where this launch's time goes, from process start (launch-timing.ts). Black box only.
+  const launchTiming = createLaunchTiming({
+    now: () => performance.now(),
+    record: (fields) => log.record('launch-timing', fields),
+    clock: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout) },
+  })
   // Telemetry (telemetry.ts): enum-only lifecycle events to the website. Off for any run with a remote
   // debugging port or an inspector (every proof and Playwright launch has one; a member's launch never
   // does) and when UCT_DESKTOP_TELEMETRY=0, so measurement runs never count as member machines.
   const debugRun = app.commandLine.hasSwitch('remote-debugging-port') ||
     process.argv.some((a) => a.startsWith('--remote-debugging-port') || a.startsWith('--inspect'))
   const telemetryOn = process.env.UCT_DESKTOP_TELEMETRY !== '0' && !debugRun
+  // A/B switches for the launch proof (launch-cold.mjs), honoured ONLY in a debug run: `late-show` waits for
+  // the title bar page before showing the window, `no-preconnect` skips the early connection. Members never
+  // have a debug port, so their launch always takes both improvements.
+  const proofAb = debugRun ? (process.env.UCT_PROOF_AB ?? '') : ''
+  // Proofs open the main window straight onto their measurement display (`x,y,w,h`), never first on the
+  // owner's primary monitor. Debug runs only.
+  const proofBounds = debugRun ? parseBounds(process.env.UCT_PROOF_WINDOW_BOUNDS) : undefined
   const telemetry = telemetryOn
     ? createTelemetry({
         file: join(app.getPath('userData'), 'telemetry.json'),
@@ -131,6 +158,12 @@ if (!app.requestSingleInstanceLock()) {
   autoUpdater.on('before-quit-for-update', () => quit.beforeQuitForUpdate())
 
   void app.whenReady().then(() => {
+    launchTiming.mark('ready')
+    // Open the connection to the website (DNS, TCP, TLS) now, while the window is being built, so the
+    // first page request does not pay for it (speed plan 4.2). Two sockets: the page and its first API call.
+    if (!proofAb.includes('no-preconnect')) {
+      try { session.fromPartition(PARTITION).preconnect({ url: ORIGIN, numSockets: 2 }) } catch { /* best effort */ }
+    }
     // Windows Update restarts: reopen UCT after the reboot, like a browser (never after a crash or hang).
     if (restartedByWindows(process.argv)) log.record('launch-after-windows-restart')
     registerOsRestart({ register: loadRegisterRestart(), enabled: app.isPackaged && !debugRun, record: (e, f) => log.record(e, f) })
@@ -213,7 +246,22 @@ if (!app.requestSingleInstanceLock()) {
     })
 
     const startHidden = TRAY_RESIDENCY_ENABLED && launchedHidden(process.argv) && !openWhenReady
-    const created = createMainWindow({ stayHidden: () => (residency ? residency.isHidden() : startHidden) })
+    const created = createMainWindow({
+      stayHidden: () => (residency ? residency.isHidden() : startHidden),
+      // The main window reopens where the member left it (its own store; pop-outs keep desk-layout.json).
+      placement: createElectronPlacement({ file: 'main-window.json', isName: (n) => n === MAIN_WINDOW_NAME }),
+      showEarly: !proofAb.includes('late-show'),
+      bounds: proofBounds,
+      onPhase: (p) => launchTiming.mark(p),
+    })
+    // Every full page load of the website in a launch's first minute, with its path and status: a launch
+    // that loads the site twice (a reload, a redirect) shows up here, in ms from process start.
+    let launchNavs = 0
+    created.site.on('did-navigate', (_e, url, code) => {
+      if (launchNavs >= 5 || performance.now() > 60_000 || !url.startsWith(ORIGIN)) return
+      launchNavs++
+      log.record('launch-navigation', { n: launchNavs, path: new URL(url).pathname, code, ms: Math.round(performance.now()) })
+    })
     const win = created.win
     siteContents = created.site
     mainContentsId = created.site.id

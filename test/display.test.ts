@@ -107,3 +107,11 @@ describe('resolveBounds', () => {
     expect(resolveBounds(saved, [])).toEqual({ x: 10, y: 10, width: 800, height: 600 })
   })
 })
+
+describe('parseBounds (proof-only window placement)', () => {
+  it('reads x,y,w,h and refuses anything else', async () => {
+    const { parseBounds } = await import('../src/main/windows/display')
+    expect(parseBounds('-1440,0,1440,950')).toEqual({ x: -1440, y: 0, width: 1440, height: 950 })
+    for (const bad of [undefined, '', '1,2,3', '0,0,100,950', '0,0,1440,99', 'a,0,1440,950', '0,0,1440,950,1', '0, 0,1440,950']) expect(parseBounds(bad)).toBeUndefined()
+  })
+})

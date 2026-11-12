@@ -56,8 +56,10 @@ export interface LayoutStore {
   count(): number
 }
 
-export function createLayoutStore(deps: { file: string; fs: StoreFs }): LayoutStore {
+export function createLayoutStore(deps: { file: string; fs: StoreFs; isName?: (name: string) => boolean }): LayoutStore {
   const { file, fs } = deps
+  // Which window names this store holds: pop-outs by default; the main window's store holds only 'main'.
+  const isName = deps.isName ?? ((n: string) => parseWindowName(n) !== null)
   const profiles: Profiles = Object.create(null)
 
   const quarantine = (raw: string): void => {
@@ -77,7 +79,7 @@ export function createLayoutStore(deps: { file: string; fs: StoreFs }): LayoutSt
         if (!windows || typeof windows !== 'object') throw new Error('shape')
         for (const [n, r] of Object.entries(windows)) {
           const rec = cleanRecord(r)
-          if (!rec || !parseWindowName(n)) throw new Error('shape')
+          if (!rec || !isName(n)) throw new Error('shape')
           ;(profiles[p] ??= Object.create(null))[n] = rec
         }
       }
@@ -107,7 +109,7 @@ export function createLayoutStore(deps: { file: string; fs: StoreFs }): LayoutSt
   return {
     saveWindow(profile, name, record) {
       const rec = cleanRecord(record)
-      if (!parseWindowName(name) || !rec || !profile) return
+      if (!isName(name) || !rec || !profile) return
       ;(profiles[profile] ??= Object.create(null))[name] = rec
       while (count() > MAX_ENTRIES) {
         let oldest: [string, string, number] | undefined

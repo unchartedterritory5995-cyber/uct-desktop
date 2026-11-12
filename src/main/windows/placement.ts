@@ -61,6 +61,8 @@ export interface PlacedWindow {
 
 export interface PlacementDeps {
   store: Pick<LayoutStore, 'saveWindow' | 'getWindow' | 'findNewest'>
+  /** Which window names are placed: pop-outs (`uct-board-*`, `uct-widget-*`) by default. */
+  isName?: (name: string) => boolean
   getDisplays(): DisplayInfo[]
   now(): number
   clock: Clock
@@ -92,6 +94,7 @@ function nearestDisplay(b: Rect, displays: readonly DisplayInfo[]): DisplayInfo 
 }
 
 export function createPlacement(deps: PlacementDeps): Placement {
+  const isName = deps.isName ?? ((n: string) => parseWindowName(n) !== null)
   const tracked = new Map<string, Tracked>()
   let lastScreenAt = -Infinity
   let debounce: unknown
@@ -164,15 +167,14 @@ export function createPlacement(deps: PlacementDeps): Placement {
 
   return {
     openOptions(frameName, features) {
-      const name = parseWindowName(frameName)
-      if (!name) return undefined
+      if (!isName(frameName)) return undefined
       const rec = lookup(frameName)
       if (rec) return resolveBounds(rec, deps.getDisplays())
       const size = sizeFromFeatures(features)
       return Object.keys(size).length ? size : undefined
     },
     onCreated(win, frameName) {
-      if (!parseWindowName(frameName)) return
+      if (!isName(frameName)) return
       const t: Tracked = { win, armed: false }
       tracked.set(frameName, t)
       const rec = lookup(frameName)

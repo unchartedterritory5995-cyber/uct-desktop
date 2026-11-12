@@ -3,6 +3,8 @@ import { join } from 'node:path'
 import { ORIGIN, PARTITION } from '../config'
 import { APP_SHELL_ORIGIN, isShellSender } from '../app-shell'
 import { createLoadGuard, type LoadGuard } from '../load-guard'
+import type { Placement } from './placement'
+export { parseBounds } from './display'
 import { CHANNELS, type WindowState } from '../../shared/contract'
 import {
   BAR_HEIGHT,
@@ -44,14 +46,31 @@ export interface MainWindow {
 export interface MainWindowOptions {
   /** True while the app should stay in the tray (started with Windows, or closed to the tray). */
   stayHidden?: () => boolean
+  /** Where the main window sat last time (its own store, name MAIN_WINDOW_NAME): reopen there. */
+  placement?: Placement
+  /** Show the window as soon as it exists (default). false = wait for the title bar page (the old way;
+   * only the launch proof's A/B switch asks for it). */
+  showEarly?: boolean
+  /** Exact bounds for this launch (proofs only), ahead of the saved placement. */
+  bounds?: { x: number; y: number; width: number; height: number }
+  /** Launch timing (launch-timing.ts): called at each phase, from listeners attached before anything can
+   * fire (the window shows and the first load starts inside this function). */
+  onPhase?: (phase: 'window' | 'shown' | 'loading' | 'domReady' | 'loaded') => void
 }
+
+
+/** The main window's name in its placement store. */
+export const MAIN_WINDOW_NAME = 'main'
+export const DEFAULT_SIZE = { width: 1500, height: 950 }
 
 export function createMainWindow(options: MainWindowOptions = {}): MainWindow {
   const stayHidden = options.stayHidden ?? (() => false)
   const start = currentCaptionColors()
+  // Last launch's bounds, carried onto the right monitor (or the nearest one if it is gone).
+  const saved = options.bounds ?? options.placement?.openOptions(MAIN_WINDOW_NAME, '')
   const win = new BrowserWindow({
-    width: 1500,
-    height: 950,
+    ...DEFAULT_SIZE,
+    ...(saved ?? {}),
     show: false,
     autoHideMenuBar: true,
     backgroundColor: '#0a0a0c',
@@ -69,6 +88,8 @@ export function createMainWindow(options: MainWindowOptions = {}): MainWindow {
     },
   })
   const bar = win.webContents
+  const phase = options.onPhase ?? (() => undefined)
+  win.once('show', () => phase('shown'))
 
   // The site: same security posture and bridge preload the main window always had.
   const view = new WebContentsView({
@@ -85,6 +106,11 @@ export function createMainWindow(options: MainWindowOptions = {}): MainWindow {
   view.setBackgroundColor('#0a0a0c')
   win.contentView.addChildView(view)
   const site = view.webContents
+  phase('window')
+  const onOrigin = (): boolean => !site.isDestroyed() && site.getURL().startsWith(ORIGIN)
+  site.on('did-start-navigation', (d) => { if (d.isMainFrame && d.url.startsWith(ORIGIN)) phase('loading') })
+  site.on('dom-ready', () => { if (onOrigin()) phase('domReady') })
+  site.on('did-finish-load', () => { if (onOrigin()) phase('loaded') })
 
   // ---- layout ----
   const fullScreen = createFullScreenController({
@@ -140,11 +166,27 @@ export function createMainWindow(options: MainWindowOptions = {}): MainWindow {
   }
   site.on('did-finish-load', focusSite)
   win.on('focus', focusSite)
-  win.once('ready-to-show', () => {
-    if (stayHidden()) return // started in the tray: the page loads now, the window shows on open
-    win.show()
+  // Show at once (speed plan 4.4): the window paints its own dark background, so there is no white
+  // flash, and the member sees the app the moment it starts instead of after the title bar page loads.
+  // Placement first: a window that was maximized comes back maximized (maximize() also shows it).
+  // Started in the tray: nothing shows now; placement and the window wait for the first open.
+  const place = (): void => {
+    if (!options.bounds) options.placement?.onCreated(win, MAIN_WINDOW_NAME)
+  }
+  if (stayHidden()) {
+    win.once('show', place)
+  } else if (options.showEarly === false) {
+    win.once('ready-to-show', () => {
+      if (stayHidden()) return
+      place()
+      if (!win.isVisible()) win.show()
+      focusSite()
+    })
+  } else {
+    place()
+    if (!win.isVisible()) win.show()
     focusSite()
-  })
+  }
 
   // ---- error page, load guard (all on the SITE contents) ----
   const showError = (kind: ErrorKind): Promise<void> => {

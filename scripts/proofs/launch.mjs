@@ -12,6 +12,9 @@ export const BASE = 'https://uctintelligence.com'
 export const MENU = '[data-guide="workspace.layoutsMenuBtn"]'
 export const CHILD_TITLE = 'proof-child'
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+/** The main window's bounds on a measurement display: its top half (display 2 is the portrait monitor;
+ * its bottom half, where Discord's newest messages are, stays visible). */
+export const topHalf = (d, maxW = 1500, maxH = 950) => ({ x: d.x, y: d.y, width: Math.min(d.w, maxW), height: Math.min(maxH, Math.floor(d.h / 2)) })
 const COMMAND_TIMEOUT_MS = 300000
 
 // A leftover app on this port would answer in place of the one this run starts.
@@ -71,7 +74,12 @@ export async function startApp(target, port, extraArgs = [], options = {}) {
       : 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe'
   const args = [...(process.env.UCT_PROOF_APP ? [process.env.UCT_PROOF_APP] : []), `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, ...extraArgs]
   if (target === 'chrome') args.push(`--app=${BASE}/`, '--window-size=1500,950', '--no-first-run', '--no-default-browser-check')
-  const child = spawn(exe, args, { stdio: 'ignore' })
+  // options.bounds = {x,y,width,height}: the app opens its main window right there (debug runs only),
+  // so a proof never flashes a window onto the owner's primary monitor first.
+  const env = options.bounds && target === 'electron'
+    ? { ...process.env, UCT_PROOF_WINDOW_BOUNDS: [options.bounds.x, options.bounds.y, options.bounds.width, options.bounds.height].map(Math.round).join(',') }
+    : process.env
+  const child = spawn(exe, args, { stdio: 'ignore', env })
   let exit = null
   child.on('exit', (code, signal) => { exit = { code, signal, at: new Date().toISOString() } })
 

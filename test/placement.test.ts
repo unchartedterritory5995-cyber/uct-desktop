@@ -377,3 +377,70 @@ describe('armed logic', () => {
     expect([...saved.values()][0].display.ordinal).toBe(ordinalOf(d[1], d))
   })
 })
+
+describe("the main window's own store (it reopens where the member left it)", () => {
+  const isMain = (n: string) => n === 'main'
+  function memFs() {
+    const files = new Map<string, string>()
+    const fs: StoreFs = {
+      readFile: (p) => {
+        if (!files.has(p)) throw new Error('ENOENT')
+        return files.get(p)!
+      },
+      writeFile: (p, d) => void files.set(p, d),
+      rename: (a, b) => (files.set(b, files.get(a)!), void files.delete(a)),
+      mkdir: () => undefined,
+    }
+    return { fs, files }
+  }
+  const t0 = { setTimeout: () => 0, clearTimeout: () => undefined }
+
+  it('a maximize, a move and a relaunch: the window comes back on the same monitor, maximized', () => {
+    const d = [disp(1, 0), disp(2, 1920)]
+    const { fs } = memFs()
+    const store = createLayoutStore({ file: 'C:/ud/main-window.json', fs, isName: isMain })
+    const p = createPlacement({ store, isName: isMain, getDisplays: () => d, now: () => 5, clock: t0 })
+    const w = fakeWin({ x: 100, y: 100, width: 1500, height: 950 })
+    p.onCreated(w, 'main')
+    w.emit('will-move')
+    w.b = { x: 2000, y: 40, width: 1500, height: 950 }
+    w.emit('moved')
+    w.max = true
+    w.emit('maximize')
+    // Next launch: a fresh store over the same file, a fresh placement.
+    const store2 = createLayoutStore({ file: 'C:/ud/main-window.json', fs, isName: isMain })
+    const p2 = createPlacement({ store: store2, isName: isMain, getDisplays: () => d, now: () => 9, clock: t0 })
+    expect(p2.openOptions('main', '')).toEqual({ x: 2000, y: 40, width: 1500, height: 950 })
+    const w2 = fakeWin({ x: 2000, y: 40, width: 1500, height: 950 })
+    p2.onCreated(w2, 'main')
+    expect(w2.max).toBe(true)
+  })
+
+  it('a first launch has nothing saved: the default size and position stand', () => {
+    const { fs } = memFs()
+    const store = createLayoutStore({ file: 'C:/ud/main-window.json', fs, isName: isMain })
+    const p = createPlacement({ store, isName: isMain, getDisplays: () => [disp(1, 0)], now: () => 1, clock: t0 })
+    expect(p.openOptions('main', '')).toBeUndefined()
+  })
+
+  it('the stores never mix: pop-out names are refused by the main store, and "main" by the pop-out store', () => {
+    const d = [disp(1, 0)]
+    const { fs, files } = memFs()
+    const main = createLayoutStore({ file: 'C:/ud/main-window.json', fs, isName: isMain })
+    const pops = createLayoutStore({ file: 'C:/ud/desk-layout.json', fs })
+    const rec = record(d[0], { x: 10, y: 10, width: 800, height: 600 })
+    main.saveWindow(deskProfile(d), 'uct-board-a', rec)
+    pops.saveWindow(deskProfile(d), 'main', rec)
+    expect(main.count()).toBe(0)
+    expect(pops.count()).toBe(0)
+    main.saveWindow(deskProfile(d), 'main', rec)
+    expect(main.count()).toBe(1)
+    // An app that only knows pop-out names reads a file holding 'main' as damaged: that is why the
+    // main window has a file of its own instead of a row in desk-layout.json.
+    const onlyPops = createLayoutStore({ file: 'C:/ud/main-window.json', fs })
+    expect(onlyPops.count()).toBe(0)
+    expect(files.has('C:/ud/main-window.json.bad')).toBe(true)
+    const pm = createPlacement({ store: pops, getDisplays: () => d, now: () => 1, clock: t0 })
+    expect(pm.openOptions('main', '')).toBeUndefined()
+  })
+})

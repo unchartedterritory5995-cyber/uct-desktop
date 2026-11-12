@@ -5,14 +5,18 @@ import type { DisplayInfo } from './display'
 import { createLayoutStore } from './layout-store'
 import { createPlacement, type Placement } from './placement'
 
-/** Call after app ready. The desk store sits under userData and holds window placement only. */
-export function createElectronPlacement(): Placement {
+/** Call after app ready. The desk store sits under userData and holds window placement only.
+ * Default: the pop-outs' store. The main window has its own file and accepts only its own name, so an
+ * older app version reading desk-layout.json never meets a name it does not know. */
+export function createElectronPlacement(opts: { file?: string; isName?: (name: string) => boolean } = {}): Placement {
   const store = createLayoutStore({
-    file: join(app.getPath('userData'), 'desk-layout.json'),
+    file: join(app.getPath('userData'), opts.file ?? 'desk-layout.json'),
     fs: nodeStoreFs,
+    isName: opts.isName,
   })
   const placement = createPlacement({
     store,
+    isName: opts.isName,
     getDisplays: (): DisplayInfo[] =>
       screen.getAllDisplays().map((d) => ({
         id: d.id,

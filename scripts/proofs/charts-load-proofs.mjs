@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process'
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { cpus } from 'node:os'
 import { join } from 'node:path'
-import { connect, recordTrace, sleep, startApp } from './launch.mjs'
+import { connect, recordTrace, sleep, startApp, topHalf } from './launch.mjs'
 
 const target = process.argv[2]
 if (target !== 'electron' && target !== 'chrome') throw new Error('target must be electron or chrome')
@@ -35,7 +35,8 @@ const MEASURE_MS = dry ? 20000 : QUICK_N ? 60000 : 300000
 const SYMBOLS = ['NVDA', 'AAPL', 'MSFT', 'AMZN', 'META', 'GOOGL', 'TSLA', 'AMD', 'AVGO', 'SPY', 'QQQ', 'IWM']
 const WIDTH = 480
 const HEIGHT = 360
-const COLUMNS = 4
+// --columns=N: pop-outs per row (4 fits a 1920 px display; 3 fits the 1440 px portrait display 2).
+const COLUMNS = Number((process.argv.find((a) => a.startsWith('--columns=')) || '--columns=4').split('=')[1])
 const MIN_FRAMES = 30
 const POP = '[aria-label="Pop out widget"]'
 
@@ -195,7 +196,9 @@ try {
   const display = JSON.parse(readFileSync(join(OUT, 'displays.json'), 'utf8'))[displayIndex]
   if (!display) throw new Error(`no display ${displayIndex}`)
   if (display.w < COLUMNS * WIDTH || display.h < Math.ceil(COUNT / COLUMNS) * HEIGHT) throw new Error('windows do not fit that display')
-  app = await startApp(target, PORT, ['--disable-features=CalculateNativeWinOcclusion'])
+  // The opener (the main window) goes onto the measurement display too, never the owner's primary monitor.
+  const d0 = JSON.parse(readFileSync(join(OUT, 'displays.json'), 'utf8'))[displayIndex]
+  app = await startApp(target, PORT, ['--disable-features=CalculateNativeWinOcclusion'], d0 ? { bounds: { ...topHalf(d0, 1500, 600), y: d0.y + Math.min(d0.h, 1440) } } : {})
   const { child, c, run, waitFor, charts } = app
   board = boardApi(run)
 

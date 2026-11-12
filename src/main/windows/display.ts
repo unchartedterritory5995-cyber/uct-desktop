@@ -100,3 +100,11 @@ export function resolveBounds(saved: WindowRecord, displays: readonly DisplayInf
   )
   return clampInto(saved.bounds, nearest.workArea)
 }
+
+/** `x,y,w,h` (integers, size at least 200x200) or undefined. */
+export function parseBounds(v: string | undefined): Rect | undefined {
+  const m = /^(-?\d{1,5}),(-?\d{1,5}),(\d{3,5}),(\d{3,5})$/.exec((v ?? '').trim())
+  if (!m) return undefined
+  const [x, y, width, height] = m.slice(1).map(Number)
+  return width >= 200 && height >= 200 ? { x, y, width, height } : undefined
+}
