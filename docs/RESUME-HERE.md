@@ -1,6 +1,6 @@
 # Resume here (desktop speed and reliability work)
 
-Last updated 2026-11-12 ~08:00 CT by an agent session. Read this first after a restart or a switch.
+Last updated 2026-11-12 ~10:40 CT by an agent session. Read this first after a restart or a switch.
 
 ## Plans (local, not in this repo)
 
@@ -40,6 +40,13 @@ Last updated 2026-11-12 ~08:00 CT by an agent session. Read this first after a r
 - **Website branch `speed-5-anim` in `C:\Users\Patrick\uct-worktrees\speed-4`** (NOT yet on master, push was rejected by a race; rebase and push): `db9bc018e1` site-wide endless-animation rail + Model Book/Community finite; `66675d1cfc` Options Flow summary request bounded + rail covers inline styles; `01bed94be7` bars pack ingest one window at a time (Web Locks); plus uncommitted adaptive overlay loop (`components/chart/adaptiveFrameLoop.js` + StockChart wiring) pending its test run.
 - Census tests on master (swallowedFetch, jsonFetcher, persistence, symbolLink, formatters, dataGrid) already fail from other sessions' drift; not ours.
 - The intro film plays once a week per device (not every launch): no change needed.
+
+## NEXT SESSION START HERE (2026-11-12 ~10:40 CT: flow.db incident fixed; boot CPU named and cut)
+
+- ⛔ **flow.db INCIDENT (4th corruption in 4 days)**: every live options write failed until 9:53 ET. Rebuilt and swapped (writes resumed in 3 s, no restart); last 3 weeks of history restored (Step B, `/data/flow_stepB.py`, state `/data/flow_stepB.state.json`, PAUSED by its 10 GB free floor). **Cause: the flow-worker volume filling** (gap-fill 11 GB snapshots x3, 39 GB damaged copies, a WAL that never shrinks) -> disk I/O error -> write-head corruption; plus Railway pulled the volume from the running old container on our 15:24 UTC deploy (11 s of I/O errors; db ok after). Fix LIVE `1a5561fe7d` (+ flow dates skip-scan `4ddc53e829`). Full record: memory `incident_flow_db_disk_full_2026_11_12`. **Owner: "leave the files"** (old gap-fill copies in /data/kept-by-owner). Next: check gap-fill 16:35/16:45 ET tonight + 08:00/08:15 ET tomorrow healed 11/11 + 11/12, then resume Step B only as far as free space allows (or owner grows the volume). ⛔ flow-worker deploys at PUSH time, not after the gate.
+- **Boot CPU**: precompile LIVE (serving 13.2 -> 9.9 s); RS bars sharing `b0849aa707` (one desk: 129 calls, 17.5 s median after a deploy); quiet window `7e3b888c1a`; RS ranking seeds from its snapshot at boot + theme prewarm 150 s `150283034b` (deploying). boot-probe `hot=`/`pool-work=` name the burners each deploy.
+- Open Flow board (`/api/live/massive/flow-board`) answered "computing" after 25 s even after the swap: re-check; a pod probe of `_board_compute` was refused by the classifier (heavy compute in market hours).
+- Waiting on the owner: Cloudflare Pro (the "Updating UCT" page `app/public/updating.html` is built), volume size.
 
 ## NEXT SESSION START HERE (2026-11-12 ~08:00 CT: precompile, hot-thread probe, flow dates, 0.1.11 ready)
 
