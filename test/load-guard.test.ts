@@ -190,3 +190,18 @@ describe('createLoadGuard', () => {
     expect(pending()).toBe(0)
   })
 })
+
+describe('the first load opens the last page', () => {
+  const clock: Clock = { setTimeout: () => 0, clearTimeout: () => undefined }
+  const firstLoad = (startPath?: string) => {
+    const loads: string[] = []
+    createLoadGuard({ appOrigin: O, startPath, clock, load: (u) => loads.push(u), showError: () => undefined, showApp: () => undefined }).start()
+    return loads[0]
+  }
+  it('starts at the given page, on the app origin only', () => {
+    expect(firstLoad('/charts')).toBe(`${O}/charts`)
+    expect(firstLoad()).toBe(`${O}/`)
+    expect(firstLoad('https://evil.test/charts')).toBe(`${O}/`)
+    expect(firstLoad('//evil.test/x')).toBe(`${O}/`)
+  })
+})

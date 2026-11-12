@@ -56,6 +56,8 @@ export interface MainWindowOptions {
   /** Launch timing (launch-timing.ts): called at each phase, from listeners attached before anything can
    * fire (the window shows and the first load starts inside this function). */
   onPhase?: (phase: 'window' | 'shown' | 'loading' | 'domReady' | 'loaded') => void
+  /** The page this launch opens (last-page.ts); "/" when absent. */
+  startPath?: string
 }
 
 
@@ -199,6 +201,7 @@ export function createMainWindow(options: MainWindowOptions = {}): MainWindow {
   }
   const guard = createLoadGuard({
     appOrigin: ORIGIN,
+    startPath: options.startPath,
     clock: { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (h) => clearTimeout(h as NodeJS.Timeout) },
     load: (url) => {
       if (!site.isDestroyed()) void site.loadURL(url).catch(() => undefined)

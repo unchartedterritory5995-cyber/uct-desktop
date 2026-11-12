@@ -42,7 +42,7 @@ const endAt = hours ? Date.now() + hours * 3600_000 : Date.now() + Math.max(0, (
 if (endAt <= Date.now() + 60_000) throw new Error('nothing to soak: the end time has passed (use --hours=N)')
 
 const others = execFileSync('powershell.exe', ['-NoProfile', '-Command',
-  `@(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'scripts[\\\\/]proofs' -and $_.ProcessId -ne ${process.pid} }).Count`], { encoding: 'utf8' }).trim()
+  `@(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'scripts[\\\\/]proofs' -and $_.CommandLine -notmatch 'deploy-watch' -and $_.ProcessId -ne ${process.pid} }).Count`], { encoding: 'utf8' }).trim()
 if (Number(others) > 0) throw new Error(`${others} other proof process(es) running: one measurement at a time`)
 const display = JSON.parse(readFileSync(join(OUT, 'displays.json'), 'utf8'))[displayIndex]
 if (!display) throw new Error(`no display ${displayIndex}`)

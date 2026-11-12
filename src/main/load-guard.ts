@@ -35,6 +35,8 @@ export interface Clock {
 
 export interface LoadGuardDeps {
   appOrigin: string
+  /** Where the first load goes (a path on the app origin); "/" when absent or not on the origin. */
+  startPath?: string
   clock: Clock
   /** Load this URL; it is always on the app origin. */
   load(url: string): void
@@ -58,6 +60,14 @@ export function createLoadGuard(deps: LoadGuardDeps): LoadGuard {
   let errorShown = false
   const home = new URL(deps.appOrigin).href
   let target = home
+  if (deps.startPath) {
+    try {
+      const u = new URL(deps.startPath, deps.appOrigin)
+      if (u.origin === new URL(deps.appOrigin).origin) target = u.href
+    } catch {
+      /* keep home */
+    }
+  }
   let disposed = false
   let hasStallTimer = false
   let hasRetryTimer = false

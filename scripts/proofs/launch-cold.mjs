@@ -33,7 +33,7 @@ const signedMarker = join(profile, 'proof-signed-in.json')
 mkdirSync(OUT, { recursive: true })
 
 const others = execFileSync('powershell.exe', ['-NoProfile', '-Command',
-  `@(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'scripts[\\\\/]proofs' -and $_.ProcessId -ne ${process.pid} }).Count`], { encoding: 'utf8' }).trim()
+  `@(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'scripts[\\\\/]proofs' -and $_.CommandLine -notmatch 'deploy-watch' -and $_.ProcessId -ne ${process.pid} }).Count`], { encoding: 'utf8' }).trim()
 if (Number(others) > 0) throw new Error(`${others} other proof process(es) running: one measurement at a time`)
 
 const display = JSON.parse(readFileSync(join(OUT, 'displays.json'), 'utf8'))[displayIndex]
@@ -45,7 +45,10 @@ const READ = `(() => {
   const api = performance.getEntriesByType('resource').filter((r) => r.name.includes('/api/') && m && r.responseEnd <= m.startTime)
     .map((r) => ({ name: r.name.replace(/^https?:\\/\\/[^/]+/, '').split('?')[0].replace(/[0-9a-f]{8}-[0-9a-f-]{27}/g, ':id'), start: Math.round(r.startTime), end: Math.round(r.responseEnd) }))
   const nt = n ? Object.fromEntries(['domainLookupStart','domainLookupEnd','connectStart','secureConnectionStart','connectEnd','requestStart','firstInterimResponseStart','responseStart','finalResponseHeadersStart','responseEnd'].map((k) => [k, Math.round(n[k] || 0)])) : null
-  return { timeOrigin: performance.timeOrigin, path: location.pathname, html: n ? Math.round(n.responseEnd) : null,
+  const js = performance.getEntriesByType('resource').filter((r) => r.name.includes('/assets/') && r.name.endsWith('.js') && m && r.startTime <= m.startTime)
+    .map((r) => ({ name: r.name.split('/assets/')[1].slice(0, -12), start: Math.round(r.startTime), end: Math.round(r.responseEnd), kb: Math.round((r.transferSize || 0) / 1024) }))
+  const lt = (window.__lt || []).filter((t) => !m || t.s <= m.startTime)
+  return { js, longTasks: lt, timeOrigin: performance.timeOrigin, path: location.pathname, html: n ? Math.round(n.responseEnd) : null,
     navType: n?.type, navName: n ? new URL(n.name).pathname : null, nt, protocol: n?.nextHopProtocol,
     candles: m ? Math.round(m.startTime) : null, api }
 })()`
@@ -127,7 +130,7 @@ for (let i = 0; i < N; i++) {
       docStart: Math.round(page.timeOrigin - t0), navType: page.navType, navName: page.navName, protocol: page.protocol, nt: page.nt,
       navigations: launchNavigations(),
       targets: (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).filter((t) => t.type === 'page').map((t) => t.url.replace(BASE, '').slice(0, 40) || '/'),
-      api: page.api,
+      api: page.api, js: page.js,
     }
   } catch (e) {
     row = { run: i + 1, error: String(e.message || e) }

@@ -24,6 +24,7 @@ import { autoUpdater as appUpdater } from 'electron-updater'
 import { createAppUpdateHub } from './app-update'
 import { classifyUpdateError, createUpdateController, type UpdaterLike } from './updates'
 import { createLaunchTiming } from './launch-timing'
+import { createLastPage } from './last-page'
 import { parseBounds } from './windows/main-window'
 import { performance } from 'node:perf_hooks'
 import { loadRegisterRestart, registerOsRestart, restartedByWindows } from './os-restart'
@@ -246,7 +247,11 @@ if (!app.requestSingleInstanceLock()) {
     })
 
     const startHidden = TRAY_RESIDENCY_ENABLED && launchedHidden(process.argv) && !openWhenReady
+    // Reopen on the member's last page (last-page.ts): what they expect, and on "/" the site waits for
+    // the sign-in check before it starts fetching the page's code.
+    const lastPage = createLastPage({ file: join(app.getPath('userData'), 'last-page.json'), fs: nodeStoreFs, origin: ORIGIN })
     const created = createMainWindow({
+      startPath: lastPage.startPath(),
       stayHidden: () => (residency ? residency.isHidden() : startHidden),
       // The main window reopens where the member left it (its own store; pop-outs keep desk-layout.json).
       placement: createElectronPlacement({ file: 'main-window.json', isName: (n) => n === MAIN_WINDOW_NAME }),
@@ -256,6 +261,9 @@ if (!app.requestSingleInstanceLock()) {
     })
     // Every full page load of the website in a launch's first minute, with its path and status: a launch
     // that loads the site twice (a reload, a redirect) shows up here, in ms from process start.
+    for (const ev of ['did-navigate', 'did-navigate-in-page'] as const) {
+      created.site.on(ev as 'did-navigate', (_e: unknown, url: string) => lastPage.note(url))
+    }
     let launchNavs = 0
     created.site.on('did-navigate', (_e, url, code) => {
       if (launchNavs >= 5 || performance.now() > 60_000 || !url.startsWith(ORIGIN)) return
