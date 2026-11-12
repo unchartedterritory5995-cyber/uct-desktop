@@ -1,5 +1,5 @@
 // Nightly speed check (plan Step 9.1; owner OK 2026-11-11). Runs from Task Scheduler each evening:
-//   1. page-cost on the five main pages in the members' build (release-share, the last installer),
+//   1. page-cost on the five main pages in the members' build (the newest release-out/v*/, members-build.mjs),
 //      window on display 5, after a 60 s warm-up on /charts.
 //   2. Compares each page with the baseline: the median of the last 7 passing nights.
 //   3. Any page over a limit is measured again; only a slowdown seen twice is posted to the ops channel.
@@ -17,11 +17,12 @@ import {
   BLIND_ALERT_AFTER, baselineFrom, confirmedRegressions, findRegressions, formatBlindAlert,
   REMIND_EVERY, formatRegressionAlert, shouldPostRegression, trailingBlind,
 } from './compare.mjs'
+import { membersBuildExe } from './members-build.mjs'
 
 const DRY = process.argv.includes('--dry')
 const DIR = process.env.UCT_NIGHTLY_DIR || join('proof-output', 'nightly') // override only for trials
 const HISTORY = join(DIR, 'history.jsonl')
-const EXE = process.env.UCT_PROOF_EXE || resolve('release-share', 'win-unpacked', 'UCT Intelligence.exe')
+const EXE = process.env.UCT_PROOF_EXE || membersBuildExe() || resolve('release-share', 'win-unpacked', 'UCT Intelligence.exe')
 const RAILWAY_LINKED_DIR = 'C:\\Users\\Patrick\\uct-dashboard' // a directory linked to the production project
 const MIN_FREE_GB = 6 // PC load rule: back off under 6 GB free
 const date = new Date().toISOString().slice(0, 10)
