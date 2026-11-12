@@ -41,7 +41,11 @@ Last updated 2026-11-10 ~21:35 CT by an agent session. Read this first after a r
 - Census tests on master (swallowedFetch, jsonFetcher, persistence, symbolLink, formatters, dataGrid) already fail from other sessions' drift; not ours.
 - The intro film plays once a week per device (not every launch): no change needed.
 
-## NEXT SESSION START HERE (2026-11-12 ~01:00 CT: the deploy gap, boot fetch, last page)
+## NEXT SESSION START HERE (2026-11-12 ~02:30 CT: deploy gap cut, nightly + gate faster)
+
+- **Deploy gap, after `5d6fc5d9ce`**: pod serving at 11.3 s (was 19.8; `flow_gap_autofill.startup_check` = 7.45 s moved to a thread), first 200 at uptime 14 s (was 28-39). Previous pod's shutdown 0.8 s (not a factor). Remaining gap ~48 s = ~34 s Railway (old stop -> new process; volume move, varies 12-35 s, not ours) + 14 s ours. Next ours: imports 6.8 s, L6485 2.2 s (diffuse). `/api/health` `boot` shows it every deploy.
+- **Nightly full-suite record completes again** (`95ef430b10`: vitest 4 -> 6 shards, 19-36 min each; collect-profile cap 15). Manual run 43168843821 all shards green, publishing. **Deploy gate 4 -> 6 Agent shards** (`d3f75945e8`): ~38 -> ~32-33 min end to end.
+- Owner 2026-11-12: "we are still very actively building ... keep rolling hard and fast" -> NO deploy batching; shrink the gap instead.
 
 - ⛔⛔ **EVERY WEB DEPLOY IS A 40-75 s OUTAGE FOR MEMBERS** (deploy-watch.mjs, 1 s samples): 05:33 UTC 40 s of 502 (old pod stopped :00, new process :12, first 200 :40); 06:00 UTC 74 s (old stopped :02, new process ~:37, first 200 1:16). Then 2-5 min at 3-6x latency while warmers run (ready stages: hot_tier 58 s, rs/scanner 162 s, dashboard 288 s). Cause: Railway runs one pod per volume (no overlap); the July "old pod is gone" finding. Controllable: process start -> serving (28-39 s). `95bfb9b9ba` adds boot marks: read `/api/health` `boot` {import_s, to_serving_s, slowest} after it deploys and cut the slowest segments. Same push: `ServerUpdatingBanner` (lib/serverGap.js): 2 gateway errors in 15 s -> one "Updating UCT" banner, health poll, then every SWR key revalidates. Owner decision worth asking: batch deploys outside regular hours (each deploy = an outage).
 - `95c96629e6` LIVE: /api/auth/me + preferences start at entry parse (lib/bootFetch.js), prefs only for the same member, one use, 10 s. `5f0a081a32`: my rails (swallowedFetch idiom, persistence manifest key, stash-sourcemaps shebang).
