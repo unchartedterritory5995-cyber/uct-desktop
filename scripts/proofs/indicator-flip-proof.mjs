@@ -22,6 +22,9 @@ const SET = arg('set', 'mixed')
 const PORT = Number(arg('port', '9441'))
 const PROFILE = arg('profile', '')
 const WARMUP = Number(arg('warmup', '8000'))
+// --last-dwell=ms: the FINAL flip waits this long instead of --dwell. A burst (--dwell=40, the key
+// held down) followed by a stop: how long the chart the member lands on takes to fill in.
+const LAST_DWELL = Number(arg('last-dwell', '0'))
 const UPDOWN = arg('pattern', 'down') // down | downup (down N then back up N: revisits)
 // --stub=ms (LOCAL SANDBOX ONLY): the chart header's small per-symbol reads (research snapshot,
 // adjustment basis, event markers) are answered here from a canned body after `ms`, so a sandbox
@@ -187,7 +190,7 @@ try {
     const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;return {sig:F.sigOf(F.chart),now:performance.now()}})()`)
     await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: K.key, code: K.key, windowsVirtualKeyCode: K.vk, nativeVirtualKeyCode: K.vk })
     await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: K.key, code: K.key, windowsVirtualKeyCode: K.vk, nativeVirtualKeyCode: K.vk })
-    await sleep(DWELL)
+    await sleep(LAST_DWELL > 0 && i === total - 1 ? LAST_DWELL : DWELL)
     const got = await run(`(()=>{const F=window.__flip;const sel=document.querySelector('[data-watch-sym][aria-selected="true"],[data-watch-sym][data-selected="true"]');return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),end:F.sigOf(F.chart),sym:sel?sel.getAttribute('data-watch-sym'):null,title:document.title}})()`)
     out.flips.push({ i, dir: K.key, before: before.sig, ...got })
     save()
