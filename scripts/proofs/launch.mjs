@@ -8,7 +8,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-export const BASE = 'https://uctintelligence.com'
+// UCT_PROOF_BASE points a proof at another origin (a local sandbox, http://127.0.0.1:<port>); production otherwise.
+export const BASE = process.env.UCT_PROOF_BASE || 'https://uctintelligence.com'
 export const MENU = '[data-guide="workspace.layoutsMenuBtn"]'
 export const CHILD_TITLE = 'proof-child'
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -201,7 +202,8 @@ if ($script:bestArea -gt 0) { [void][M]::ShowWindow($script:best, 9); [void][M]:
 
     await waitFor(`location.origin === '${BASE}' && document.readyState !== 'loading'`, 60000)
     if (signIn) {
-      const creds = JSON.stringify({ email: process.env.BENCH_EMAIL, password: process.env.BENCH_PASSWORD })
+      // PROOF_EMAIL / PROOF_PASSWORD name a sandbox's own test account; the bench member otherwise.
+      const creds = JSON.stringify({ email: process.env.PROOF_EMAIL || process.env.BENCH_EMAIL, password: process.env.PROOF_PASSWORD || process.env.BENCH_PASSWORD })
       const login = await run(`fetch('/api/auth/login',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:${JSON.stringify(creds)}}).then(r=>r.status)`)
       console.log(`sign-in status ${login}`)
       if (login !== 200) throw new Error('sign-in refused')
