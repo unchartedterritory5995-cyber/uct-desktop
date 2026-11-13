@@ -62,6 +62,50 @@ function etWallSeconds(now) {
   return Date.UTC(+parts.year, +parts.month - 1, +parts.day, +parts.hour, +parts.minute, +parts.second) / 1000
 }
 
+const HEAP_TRACE = process.argv.includes('--heap-trace')
+const HEAP_SNAPSHOT = process.argv.includes('--heap-snapshot')
+
+/** A full heap snapshot of the main renderer after a forced GC, streamed to proof-output/heap-<day>.heapsnapshot
+ * (open it in DevTools > Memory, or run scripts/proofs/heap-retainers.mjs on it). */
+async function writeHeapSnapshot(c) {
+  const out = join(OUT, `heap-${day}.heapsnapshot`)
+  writeFileSync(out, '')
+  const off = c.on((m) => { if (m.method === 'HeapProfiler.addHeapSnapshotChunk') appendFileSync(out, m.params.chunk) })
+  await c.send('HeapProfiler.enable')
+  await c.send('HeapProfiler.collectGarbage')
+  await c.send('HeapProfiler.takeHeapSnapshot', { reportProgress: false, captureNumericValue: false })
+  if (typeof off === 'function') off()
+  console.log(`heap snapshot -> ${out}`)
+}
+
+/** Retained allocations by site, from a sampling heap profile read after a forced GC. A site is named by
+ * the innermost three frames in the site's own bundle (/assets/); a stack with none by its top frame. */
+async function writeHeapTrace(c) {
+  await c.send('HeapProfiler.collectGarbage')
+  const { profile } = await c.send('HeapProfiler.getSamplingProfile')
+  const bySite = new Map()
+  let total = 0
+  const walk = (node, stack) => {
+    const f = node.callFrame
+    const url = String(f.url)
+    const here = `${f.functionName || '(anon)'} ${url.replace(/^.*\/assets\//, 'assets/')}:${f.lineNumber + 1}:${f.columnNumber + 1}`
+    const next = [...stack, { here, ours: url.includes('/assets/') }]
+    if (node.selfSize > 0) {
+      total += node.selfSize
+      const ours = next.filter((x) => x.ours)
+      const key = (ours.length ? ours.slice(-3) : next.slice(-1)).map((x) => x.here).reverse().join(' <- ')
+      bySite.set(key, (bySite.get(key) || 0) + node.selfSize)
+    }
+    for (const ch of node.children || []) walk(ch, next)
+  }
+  walk(profile.head, [])
+  const top = [...bySite.entries()].sort((a, b) => b[1] - a[1]).slice(0, 40).map(([site, bytes]) => ({ mb: +(bytes / 1048576).toFixed(1), site }))
+  const out = join(OUT, `heap-trace-${day}.json`)
+  writeFileSync(out, JSON.stringify({ at: new Date().toISOString(), retainedMb: +(total / 1048576).toFixed(1), top }, null, 2))
+  console.log(`heap trace: ${(total / 1048576).toFixed(1)} MB retained since start -> ${out}`)
+  for (const t of top.slice(0, 12)) console.log(`  ${String(t.mb).padStart(7)} MB  ${t.site}`)
+}
+
 const layout = { widgets: CHARTS.map((c) => ({ id: c.id, type: 'chart', color: 'N', x: c.x, y: c.y, w: 12, h: 10, opts: { tf: c.tf } })), cols: 24, version: 1 }
 const groups = { A: 'SPY', B: null, C: null, D: null, ...Object.fromEntries(CHARTS.map((c) => [`N:${c.id}`, c.sym])) }
 const tfSeconds = { 1: 60, 5: 300, 15: 900 }
@@ -196,6 +240,14 @@ try {
   // Pop-outs render in the main page's renderer: their charts appear in the main window's debug map.
   for (const w of windows) await evalIn(w.s, INSTALL).catch(() => {})
   console.log(`soak running until ${new Date(endAt).toISOString()} with ${windows.length} windows; samples -> ${samplesFile}`)
+  // --heap-trace: sample allocations from here on; at the end, after a forced GC, the samples still alive
+  // ARE what the session retained. The 2026-11-12 market day showed the renderer's JS heap floor climbing
+  // ~150-230 MB/h with the DOM flat: this names the code holding it.
+  if (HEAP_TRACE) {
+    await c.send('HeapProfiler.enable')
+    await c.send('HeapProfiler.startSampling', { samplingInterval: 32768 })
+    console.log('heap trace: sampling allocations')
+  }
 
   let n = 0
   let lastSummary = Date.now()
@@ -222,6 +274,8 @@ try {
     console.log(`${row.at.slice(11, 16)}Z ws ${row.proc?.wsMb ?? '?'} MB priv ${row.proc?.privMb ?? '?'} MB | errors ${events.errors} crashes ${events.crashes.length} reloads ${events.reloads.length}${stale.length ? ` | NOT LIVE: ${stale.join(',')}` : ''}`)
     await sleep(Math.max(1000, SAMPLE_MS - (Date.now() - now.getTime())))
   }
+  if (HEAP_TRACE) await writeHeapTrace(app.c)
+  if (HEAP_SNAPSHOT) await writeHeapSnapshot(app.c)
 } catch (e) {
   exitCode = 1
   console.log(`soak stopped: ${String(e.message).split('\n')[0]}`)

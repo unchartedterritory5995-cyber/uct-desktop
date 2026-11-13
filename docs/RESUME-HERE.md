@@ -1,6 +1,6 @@
 # Resume here (desktop speed and reliability work)
 
-Last updated 2026-11-12 ~10:40 CT by an agent session. Read this first after a restart or a switch.
+Last updated 2026-11-12 ~19:50 CT by an agent session. Read this first after a restart or a switch.
 
 ## Plans (local, not in this repo)
 
@@ -40,6 +40,13 @@ Last updated 2026-11-12 ~10:40 CT by an agent session. Read this first after a r
 - **Website branch `speed-5-anim` in `C:\Users\Patrick\uct-worktrees\speed-4`** (NOT yet on master, push was rejected by a race; rebase and push): `db9bc018e1` site-wide endless-animation rail + Model Book/Community finite; `66675d1cfc` Options Flow summary request bounded + rail covers inline styles; `01bed94be7` bars pack ingest one window at a time (Web Locks); plus uncommitted adaptive overlay loop (`components/chart/adaptiveFrameLoop.js` + StockChart wiring) pending its test run.
 - Census tests on master (swallowedFetch, jsonFetcher, persistence, symbolLink, formatters, dataGrid) already fail from other sessions' drift; not ours.
 - The intro film plays once a week per device (not every launch): no change needed.
+
+## NEXT SESSION START HERE (2026-11-12 ~19:50 CT: complete flow.db live, chart memory leak fixed)
+
+- **flow.db**: complete rebuild LIVE since 00:44 UTC 11/13 (18.44M rows, 5/1 -> 11/12, quick_check ok). 11/10 (23k rows) and 11/12 (gaps 09:30-09:53, 11:40-13:28 ET) should heal at the 08:00 / 08:15 ET gap-fill on 11/13: CHECK `[gap-fill]` lines + per-day counts (dates are unpadded `M/D/YYYY`). Two writer processes on flow.db corrupted it once more today: never bulk-insert into the live file; build a separate file and swap. flow-worker auto deploy is OFF (manual after the close). Everything: memory `incident_flow_db_disk_full_2026_11_12`, repo `docs/runbooks/flow-worker-deploys-and-flow-db.md`.
+- **Chart memory leak FIXED** `ca8db34348` (website, deploying ~01:15 UTC): ~82 old StockChart render scopes pinned six chart-data arrays (V8 shared render scope + React keeping each effect's last cleanup); inner functions now read them through `_big`. Rail `StockChart.renderScopeLeak.test.js`. VERIFY in the 11/13 session: `node scripts/proofs/soak.mjs --hours=1 --heap-trace` (and `--heap-snapshot` + `scripts/proofs/heap-retainers.mjs` if the floor still climbs). Market-day 11/12 baseline: heap floor +150-230 MB/h; soak tooling fixed (`58a1a8d`: ET clock, late-reply crash).
+- Cloudflare Pro (owner bought): custom error rule "Deploy gap: Updating UCT page" ACTIVE (proven during a deploy: 49 s, every load got the page) + health check `uct-web-api-health` + email alert. HTTP/2 prioritization test still TODO (needs a quiet proof slot).
+- WebP compass mark `eec65fb779`, RS ranking boot seed `150283034b`, boot quiet window `7e3b888c1a`, precompile `7f649c5598`: all live.
 
 ## NEXT SESSION START HERE (2026-11-12 ~10:40 CT: flow.db incident fixed; boot CPU named and cut)
 
