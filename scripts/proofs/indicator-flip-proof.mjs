@@ -374,14 +374,20 @@ try {
       // reading the head and restoring: the restore then answers 409 and the bench board is left
       // on the test layout (it happened on 2026-11-12, at 0.7 s a flip). Wait out the debounce,
       // retry on 409, and exit non-zero if the recorded board is not back.
+      // ⛔ AND A SITE THAT IS RESTARTING IS WAITED FOR. A deploy landed during a run on 2026-11-13:
+      // the head read answered an HTML error page, the restore threw, and the bench board was
+      // left on the test layout until it was put back by hand. An answer that is not a version
+      // number (or a restore that is neither 200 nor 409) is retried for about two minutes.
       await sleep(1500)
       let st = null
-      for (let k = 0; k < 6; k++) {
-        const head = await board.head()
+      for (let k = 0; k < 30; k++) {
+        let head = null
+        try { head = await board.head() } catch { head = null }
         if (head === originalVersion) { st = 'unchanged'; break }
-        st = await board.restore(originalVersion, head)
-        if (st !== 409) break
-        await sleep(1000)
+        if (typeof head !== 'number') { st = 'site not answering'; await sleep(5000); continue }
+        try { st = await board.restore(originalVersion, head) } catch { st = 'site not answering' }
+        if (st === 200) break
+        await sleep(st === 409 ? 1000 : 5000)
       }
       out.boardRestore = st
       console.log(`board restore: ${out.boardRestore}`)
