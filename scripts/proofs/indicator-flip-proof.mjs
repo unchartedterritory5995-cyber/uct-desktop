@@ -187,10 +187,13 @@ try {
   }
   out.list = { id: pick.id, name: pick.name }
 
+  // A --tfs run clicks the chart's own timeframe buttons, and the bar sheds buttons that do not
+  // fit: the chart is given more of the row then, so the buttons asked for are there to click.
+  const CHART_W = arg('tfs', '') ? 19 : 16
   const layout = {
     widgets: [
-      { id: 'flip-chart', type: 'chart', color: 'A', x: 0, y: 0, w: 16, h: 20, opts: { tf: TF, settings: { indicatorInstances: SETS[SET], ...(HEADER.length ? { header: { fields: HEADER } } : {}) } } },
-      { id: 'flip-wl', type: 'watchlist', color: 'A', x: 16, y: 0, w: 8, h: 20, opts: { watchKey, watchName: pick.name } },
+      { id: 'flip-chart', type: 'chart', color: 'A', x: 0, y: 0, w: CHART_W, h: 20, opts: { tf: TF, settings: { indicatorInstances: SETS[SET], ...(HEADER.length ? { header: { fields: HEADER } } : {}) } } },
+      { id: 'flip-wl', type: 'watchlist', color: 'A', x: CHART_W, y: 0, w: 24 - CHART_W, h: 20, opts: { watchKey, watchName: pick.name } },
     ],
     cols: 24,
     version: 1,
@@ -271,18 +274,28 @@ try {
   // --tfs=1W,1D,1W: after the flips, switch the chart's timeframe through these (the labels of the
   // buttons in its timeframe bar), one per dwell, recorded exactly like a flip into <out>.tf.json
   // so the same reports read it: do the indicators arrive with the candles on a timeframe switch?
+  // --peek=<js expression>: evaluated in the page after the flips (and again after the timeframe
+  // switches), the JSON-able result kept as out.peek / out.peekAfterTfs. For asking the page what
+  // it holds at the moment that matters (a storage key, a counter an override chunk keeps).
+  const PEEK = arg('peek', '')
+  const peek = async () => { try { return await run(`(()=>{try{return JSON.parse(JSON.stringify(${PEEK}))}catch(e){return 'peek threw: '+e.message}})()`) } catch (e) { return `peek failed: ${e.message}` } }
+  if (PEEK) { out.peek = await peek(); save() }
   const TFS = arg('tfs', '').split(',').filter(Boolean)
   if (TFS.length) {
     const tfOut = { ...out, flips: [], tfSwitches: TFS }
     for (let i = 0; i < TFS.length; i++) {
       const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),now:performance.now()}})()`)
       const clicked = await run(`(()=>{const w=document.querySelector('[data-widget-id="flip-chart"]');const b=[...w.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(TFS[i])});if(!b)return null;const t=performance.now();b.click();return t})()`, true)
-      if (clicked == null) throw new Error(`no timeframe button labelled ${TFS[i]} in the chart's bar`)
+      if (clicked == null) {
+        const have = await run(`(()=>{const w=document.querySelector('[data-widget-id="flip-chart"]');return w?[...w.querySelectorAll('button')].map(x=>x.textContent.trim()).filter(t=>t&&t.length<=4).join(' '):'no chart widget'})()`)
+        throw new Error(`no timeframe button labelled ${TFS[i]} in the chart's bar (short button labels there: ${have})`)
+      }
       await sleep(DWELL)
       const got = await run(`(()=>{const F=window.__flip;return {frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),title:document.title}})()`)
       tfOut.flips.push({ i, dir: `tf ${TFS[i]}`, before: before.sig, key: clicked, ...got })
       writeFileSync(OUT.replace(/\.json$/, '') + '.tf.json', JSON.stringify(tfOut, null, 1))
     }
+    if (PEEK) { out.peekAfterTfs = await peek(); save() }
   }
   // --reloads=N: after the flips, reload the page N times and record, from the start of each new
   // document, the frame the candles first appear in and the frame each series first has a value:
