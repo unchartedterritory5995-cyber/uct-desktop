@@ -268,6 +268,22 @@ try {
     out.flips.push({ i, dir: K.key, before: before.sig, ...got })
     save()
   }
+  // --tfs=1W,1D,1W: after the flips, switch the chart's timeframe through these (the labels of the
+  // buttons in its timeframe bar), one per dwell, recorded exactly like a flip into <out>.tf.json
+  // so the same reports read it: do the indicators arrive with the candles on a timeframe switch?
+  const TFS = arg('tfs', '').split(',').filter(Boolean)
+  if (TFS.length) {
+    const tfOut = { ...out, flips: [], tfSwitches: TFS }
+    for (let i = 0; i < TFS.length; i++) {
+      const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),now:performance.now()}})()`)
+      const clicked = await run(`(()=>{const w=document.querySelector('[data-widget-id="flip-chart"]');const b=[...w.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(TFS[i])});if(!b)return null;const t=performance.now();b.click();return t})()`, true)
+      if (clicked == null) throw new Error(`no timeframe button labelled ${TFS[i]} in the chart's bar`)
+      await sleep(DWELL)
+      const got = await run(`(()=>{const F=window.__flip;return {frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),title:document.title}})()`)
+      tfOut.flips.push({ i, dir: `tf ${TFS[i]}`, before: before.sig, key: clicked, ...got })
+      writeFileSync(OUT.replace(/\.json$/, '') + '.tf.json', JSON.stringify(tfOut, null, 1))
+    }
+  }
   // --reloads=N: after the flips, reload the page N times and record, from the start of each new
   // document, the frame the candles first appear in and the frame each series first has a value:
   // how long the FIRST chart of a page load waits for its indicators.
