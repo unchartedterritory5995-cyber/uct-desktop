@@ -38,6 +38,9 @@ const STUB = Number(arg('stub', '0'))
 // candidate chunk measured against live data before it is merged. Nothing is sent to the server.
 // The run stops unless the page really ran the file (it sets a marker).
 const OVERRIDE = arg('override', '')
+// --header=mcap,earn,rating,perf5d,theme,rvol,ipoDate: the chart header's info row shows these fields
+// (the default is market cap, next earnings, UCT rating). For timing the optional ones.
+const HEADER = arg('header', '').split(',').filter(Boolean)
 const D = { x: -1440, y: 0, w: 1440, h: 950 } // display 2 (portrait), top half
 
 const inst = (defId, inputs = {}) => ({ instanceId: `t:${defId}`, defId, inputs, hidden: false })
@@ -75,6 +78,29 @@ const SAMPLER = `(()=>{
     F.mo = new MutationObserver((list) => { const t = performance.now(); for (const m of list) { if (F.dom.length > 600) return; const el = m.target.nodeType === 3 ? m.target.parentElement : m.target; if (!el || el.closest('canvas') || el.closest('table')) continue; const c = el.className; const cls = String((c && c.baseVal !== undefined ? c.baseVal : c) || el.tagName).split(' ')[0].replace(/^_/, '').slice(0, 44); const txt = (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 60); F.dom.push({ t: t, cls: cls, txt: txt }) } });
     F.mo.observe(W, { subtree: true, childList: true, characterData: true }) } catch (e) { F.domErr = String(e) }
   return true })()`
+
+// Runs at the start of every new document (see --reloads): one sample per frame of what the chart holds.
+const RELOAD_SAMPLER = `(()=>{
+  if (window.top !== window) return;
+  const R = window.__reload = { frames: [], res: [] };
+  const has = (d) => { for (let i = d.length - 1, n = 0; i >= 0 && n < 400; i--, n++) { const v = d[i] && d[i].value; if (typeof v === 'number' && Number.isFinite(v)) return 1 } return 0 };
+  let prev = '';
+  const tick = (t) => {
+    try {
+      const h = (window.__uctChartDebug || {})['flip-chart'];
+      if (h) {
+        const nb = h.newestBar(); const es = h.engineSeries() || [];
+        const o = { c: nb ? nb.count : 0, s: {} };
+        for (const s of es) { let v = has(s.data); if (!v) for (const r of s.runs) { if (has(r)) { v = 1; break } } o.s[s.instanceId + '::' + s.plotKey] = v }
+        const j = JSON.stringify(o);
+        if (j !== prev) { R.frames.push({ t: Math.round(t), o: o }); prev = j }
+      }
+    } catch (e) { R.err = String(e) }
+    if (R.frames.length < 400) requestAnimationFrame(tick)
+  };
+  requestAnimationFrame(tick);
+  try { new PerformanceObserver((l) => { for (const e of l.getEntries()) { if (e.name.indexOf('/api/signature/') >= 0) R.res.push({ u: e.name.replace(location.origin, '').slice(0, 60), s: Math.round(e.startTime), e: Math.round(e.responseEnd) }) } }).observe({ type: 'resource', buffered: true }) } catch (e) {}
+})()`
 
 const out = { startedUtc: new Date().toISOString(), tf: TF, set: SET, flips: [], dwell: DWELL }
 const save = () => writeFileSync(OUT, JSON.stringify(out, null, 1))
@@ -163,7 +189,7 @@ try {
 
   const layout = {
     widgets: [
-      { id: 'flip-chart', type: 'chart', color: 'A', x: 0, y: 0, w: 16, h: 20, opts: { tf: TF, settings: { indicatorInstances: SETS[SET] } } },
+      { id: 'flip-chart', type: 'chart', color: 'A', x: 0, y: 0, w: 16, h: 20, opts: { tf: TF, settings: { indicatorInstances: SETS[SET], ...(HEADER.length ? { header: { fields: HEADER } } : {}) } } },
       { id: 'flip-wl', type: 'watchlist', color: 'A', x: 16, y: 0, w: 8, h: 20, opts: { watchKey, watchName: pick.name } },
     ],
     cols: 24,
@@ -241,6 +267,22 @@ try {
     const got = await run(`(()=>{const F=window.__flip;const sel=document.querySelector('[data-watch-sym][aria-selected="true"],[data-watch-sym][data-selected="true"]');return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),sym:sel?sel.getAttribute('data-watch-sym'):null,title:document.title}})()`)
     out.flips.push({ i, dir: K.key, before: before.sig, ...got })
     save()
+  }
+  // --reloads=N: after the flips, reload the page N times and record, from the start of each new
+  // document, the frame the candles first appear in and the frame each series first has a value:
+  // how long the FIRST chart of a page load waits for its indicators.
+  const RELOADS = Number(arg('reloads', '0'))
+  if (RELOADS > 0) {
+    await sleep(2500) // the group's symbol and anything queued for this browser's stores are written
+    await c.send('Page.addScriptToEvaluateOnNewDocument', { source: RELOAD_SAMPLER })
+    out.reloads = []
+    for (let i = 0; i < RELOADS; i++) {
+      await c.send('Page.reload', {})
+      await sleep(Number(arg('reload-wait', '7000')))
+      const got = await run(`(()=>{const R=window.__reload;return R?{frames:R.frames,res:R.res,sym:(document.querySelector('[data-watch-sym][aria-selected="true"],[data-watch-sym][data-selected="true"]')||{getAttribute(){return null}}).getAttribute('data-watch-sym'),title:document.title}:null})()`)
+      out.reloads.push(got)
+      save()
+    }
   }
   // --shot=<file.png>: what the page looks like at the end of the last flip
   const SHOT = arg('shot', '')
