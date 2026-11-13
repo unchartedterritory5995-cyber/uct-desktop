@@ -10,7 +10,7 @@
 //
 // Usage: node scripts/proofs/indicator-flip-proof.mjs <out.json> [--flips=N] [--dwell=ms] [--tf=D] [--base=URL] [--set=name]
 // Sends no OS keys: key presses are DevTools-dispatched into this run's own page.
-import { writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { startApp, sleep, BASE } from './launch.mjs'
 
 const OUT = process.argv[2]
@@ -25,11 +25,19 @@ const WARMUP = Number(arg('warmup', '8000'))
 // --last-dwell=ms: the FINAL flip waits this long instead of --dwell. A burst (--dwell=40, the key
 // held down) followed by a stop: how long the chart the member lands on takes to fill in.
 const LAST_DWELL = Number(arg('last-dwell', '0'))
+// --cpuprofile=i,j: a CPU profile of the 700 ms after the key of those flips, saved beside the output
+// (<out>.flip<i>.cpuprofile, loadable in DevTools) for indicator-cpu-report.mjs.
+const PROFILE_FLIPS = new Set(arg('cpuprofile', '').split(',').filter(Boolean).map(Number))
 const UPDOWN = arg('pattern', 'down') // down | downup (down N then back up N: revisits)
 // --stub=ms (LOCAL SANDBOX ONLY): the chart header's small per-symbol reads (research snapshot,
 // adjustment basis, event markers) are answered here from a canned body after `ms`, so a sandbox
 // with no provider data still shows header values and the server makes no provider call for them.
 const STUB = Number(arg('stub', '0'))
+// --override=<url part>=<file>: THIS RUN'S BROWSER ONLY is handed <file> wherever it asks for a
+// script whose URL contains <url part> (e.g. vendor-charts-=C:/x/vendor-charts-patched.js): a
+// candidate chunk measured against live data before it is merged. Nothing is sent to the server.
+// The run stops unless the page really ran the file (it sets a marker).
+const OVERRIDE = arg('override', '')
 const D = { x: -1440, y: 0, w: 1440, h: 950 } // display 2 (portrait), top half
 
 const inst = (defId, inputs = {}) => ({ instanceId: `t:${defId}`, defId, inputs, hidden: false })
@@ -85,6 +93,26 @@ try {
   const me = await run(`fetch('/api/auth/me',{credentials:'include'}).then(r=>r.json()).then(j=>String((j.user||j).email||'').split('@')[1])`)
   const LOCAL = /^http:\/\/(127\.0\.0\.1|localhost)[:/]/.test(BASE)
   if (me !== (LOCAL ? 'local.dev' : 'uctintelligence.internal')) throw new Error('not a synthetic account')
+  if (OVERRIDE) {
+    if (STUB > 0) throw new Error('--override and --stub cannot be combined')
+    const cut = OVERRIDE.indexOf('=')
+    const part = OVERRIDE.slice(0, cut)
+    const file = OVERRIDE.slice(cut + 1)
+    if (cut < 1 || !/^[\w.-]+$/.test(part)) throw new Error('--override=<url part>=<file>')
+    const body = Buffer.from(readFileSync(file, 'utf8') + '\n;globalThis.__uctOverride=(globalThis.__uctOverride||0)+1;\n').toString('base64')
+    out.override = { part, file, served: [] }
+    // A script already in the browser's disk cache is never offered to the interceptor (measured
+    // 2026-11-13: fromDiskCache, zero pauses), so the cache is bypassed while the page loads.
+    await c.send('Network.enable')
+    await c.send('Network.setCacheDisabled', { cacheDisabled: true })
+    await c.send('Fetch.enable', { patterns: [{ urlPattern: `*/assets/*${part}*` }] })
+    c.on((m) => {
+      if (m.method !== 'Fetch.requestPaused') return
+      const { requestId, request } = m.params
+      out.override.served.push(new URL(request.url).pathname)
+      c.send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: 'text/javascript; charset=utf-8' }, { name: 'Access-Control-Allow-Origin', value: '*' }], body }).catch(() => {})
+    })
+  }
   if (STUB > 0) {
     if (!LOCAL) throw new Error('--stub is for the local sandbox only: production is measured as it is')
     out.stub = { ms: STUB, asked: [] }
@@ -175,6 +203,15 @@ try {
   await charts()
   await waitFor(`!!(window.__uctChartDebug && window.__uctChartDebug['flip-chart'] && window.__uctChartDebug['flip-chart'].newestBar())`, 240000)
   await waitFor(`document.querySelectorAll('[data-watch-sym]').length >= 8`, 90000)
+  // The marker is read on EVERY run: a run without --override that finds it is running an
+  // override left in this profile's cache, and would report it as the shipped script.
+  const overrideRan = await run(`globalThis.__uctOverride || 0`)
+  if (out.override) {
+    out.override.ran = overrideRan
+    await c.send('Network.disable') // the cache is back in use for the measured flips
+    console.log(`override: ${out.override.part} served ${out.override.served.length} time(s) as ${[...new Set(out.override.served)].join(', ')}; ran ${out.override.ran}`)
+    if (out.override.ran !== 1) throw new Error('the override file did not run exactly once in the page: this run would measure the shipped script')
+  } else if (overrideRan !== 0) throw new Error('an override script from an earlier run is still being served to this profile: clear its cache')
   await sleep(WARMUP) // the list's own up-front warm (and, on a new profile, the bars pack ingest)
   out.pack = await run(`(()=>{const o={};for(const k of ['barspack.version','barspack.seed','barspack.hotVersion','intradaypack.version','breadthpack.version']){try{o[k]=localStorage.getItem(k)}catch(e){o[k]='ERR'}}return o})()`)
   out.page = await run(`({hidden:document.hidden,w:innerWidth,h:innerHeight,x:screenX,y:screenY,rows:document.querySelectorAll('[data-watch-sym]').length,first:[...document.querySelectorAll('[data-watch-sym]')].slice(0,${FLIPS + 3}).map(e=>e.getAttribute('data-watch-sym')),series:(window.__uctChartDebug['flip-chart'].engineSeries()||[]).map(s=>s.instanceId+'::'+s.plotKey+'#'+s.data.length)})`)
@@ -191,12 +228,26 @@ try {
   for (let i = 0; i < total; i++) {
     const K = (UPDOWN === 'downup' && i >= FLIPS) ? { key: 'ArrowUp', vk: 38 } : { key: 'ArrowDown', vk: 40 }
     const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),now:performance.now()}})()`)
+    const profiling = PROFILE_FLIPS.has(i)
+    if (profiling) { await c.send('Profiler.enable'); await c.send('Profiler.setSamplingInterval', { interval: 100 }); await c.send('Profiler.start') }
     await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: K.key, code: K.key, windowsVirtualKeyCode: K.vk, nativeVirtualKeyCode: K.vk })
     await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: K.key, code: K.key, windowsVirtualKeyCode: K.vk, nativeVirtualKeyCode: K.vk })
-    await sleep(LAST_DWELL > 0 && i === total - 1 ? LAST_DWELL : DWELL)
+    if (profiling) {
+      await sleep(700)
+      const { profile } = await c.send('Profiler.stop')
+      writeFileSync(OUT.replace(/\.json$/, '') + `.flip${i}.cpuprofile`, JSON.stringify(profile))
+      await sleep(Math.max(0, DWELL - 700))
+    } else await sleep(LAST_DWELL > 0 && i === total - 1 ? LAST_DWELL : DWELL)
     const got = await run(`(()=>{const F=window.__flip;const sel=document.querySelector('[data-watch-sym][aria-selected="true"],[data-watch-sym][data-selected="true"]');return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),sym:sel?sel.getAttribute('data-watch-sym'):null,title:document.title}})()`)
     out.flips.push({ i, dir: K.key, before: before.sig, ...got })
     save()
+  }
+  // --shot=<file.png>: what the page looks like at the end of the last flip
+  const SHOT = arg('shot', '')
+  if (SHOT) {
+    const { data } = await c.send('Page.captureScreenshot', { format: 'png' })
+    writeFileSync(SHOT, Buffer.from(data, 'base64'))
+    out.shot = SHOT
   }
 } catch (e) {
   exitCode = 1
