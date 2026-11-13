@@ -139,6 +139,43 @@ try {
       c.send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: 'text/javascript; charset=utf-8' }, { name: 'Access-Control-Allow-Origin', value: '*' }], body }).catch(() => {})
     })
   }
+  // --dist=<dir>: THIS RUN'S BROWSER ONLY runs the frontend built in <dir> (a local `vite build`)
+  // against the site's real API. The page document and every /assets/ file that exists in <dir>
+  // are answered from disk; everything else (the API, other static files) goes to the site. A
+  // whole candidate build measured on production before it is merged: nothing is published.
+  // ⛔ Build it with the site's own VITE_* values or its flags read "off" in the candidate.
+  const DIST = arg('dist', '')
+  if (DIST) {
+    if (OVERRIDE || STUB > 0) throw new Error('--dist cannot be combined with --override or --stub')
+    const { existsSync } = await import('node:fs')
+    const { join, extname } = await import('node:path')
+    const TYPES = { '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.json': 'application/json', '.map': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.wasm': 'application/wasm' }
+    const indexHtml = readFileSync(join(DIST, 'index.html'))
+    const entry = (String(indexHtml).match(/\/assets\/index-[\w-]+\.js/) || [''])[0]
+    if (!entry) throw new Error('--dist: no /assets/index-*.js in its index.html (is it a vite build?)')
+    out.dist = { dir: DIST, entry, documents: 0, served: 0, passedOn: [] }
+    const origin = new URL(BASE).origin
+    await c.send('Network.enable')
+    await c.send('Network.setCacheDisabled', { cacheDisabled: true })
+    await c.send('Network.setBypassServiceWorker', { bypass: true })
+    await c.send('Fetch.enable', { patterns: [{ urlPattern: `${origin}/assets/*` }, { urlPattern: `${origin}/*`, resourceType: 'Document' }] })
+    const answer = (requestId, type, buf) => c.send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: type }, { name: 'Cache-Control', value: 'no-store' }, { name: 'Access-Control-Allow-Origin', value: '*' }], body: Buffer.from(buf).toString('base64') }).catch(() => {})
+    c.on((m) => {
+      if (m.method !== 'Fetch.requestPaused') return
+      const { requestId, request, resourceType } = m.params
+      const u = new URL(request.url)
+      if (u.pathname.startsWith('/assets/')) {
+        const f = join(DIST, decodeURIComponent(u.pathname))
+        if (existsSync(f)) { out.dist.served += 1; answer(requestId, TYPES[extname(f).toLowerCase()] || 'application/octet-stream', readFileSync(f)); return }
+        if (out.dist.passedOn.length < 40) out.dist.passedOn.push(u.pathname)
+      } else if (resourceType === 'Document' && !u.pathname.startsWith('/api/')) {
+        out.dist.documents += 1
+        answer(requestId, TYPES['.html'], indexHtml)
+        return
+      }
+      c.send('Fetch.continueRequest', { requestId }).catch(() => {})
+    })
+  }
   if (STUB > 0) {
     if (!LOCAL) throw new Error('--stub is for the local sandbox only: production is measured as it is')
     out.stub = { ms: STUB, asked: [] }
@@ -241,6 +278,11 @@ try {
     console.log(`override: ${out.override.part} served ${out.override.served.length} time(s) as ${[...new Set(out.override.served)].join(', ')}; ran ${out.override.ran}`)
     if (out.override.ran !== 1) throw new Error('the override file did not run exactly once in the page: this run would measure the shipped script')
   } else if (overrideRan !== 0) throw new Error('an override script from an earlier run is still being served to this profile: clear its cache')
+  if (DIST) {
+    const runsIt = await run(`!!document.querySelector('script[src*=${JSON.stringify(out.dist.entry)}]')`)
+    console.log(`dist: ${out.dist.documents} document(s) and ${out.dist.served} asset(s) answered from ${DIST}; the page runs its entry script: ${runsIt}`)
+    if (!runsIt) throw new Error('the page is not running the candidate build: this run would measure the shipped one')
+  }
   await sleep(WARMUP) // the list's own up-front warm (and, on a new profile, the bars pack ingest)
   out.pack = await run(`(()=>{const o={};for(const k of ['barspack.version','barspack.seed','barspack.hotVersion','intradaypack.version','breadthpack.version']){try{o[k]=localStorage.getItem(k)}catch(e){o[k]='ERR'}}return o})()`)
   out.page = await run(`({hidden:document.hidden,w:innerWidth,h:innerHeight,x:screenX,y:screenY,rows:document.querySelectorAll('[data-watch-sym]').length,first:[...document.querySelectorAll('[data-watch-sym]')].slice(0,${FLIPS + 3}).map(e=>e.getAttribute('data-watch-sym')),series:(window.__uctChartDebug['flip-chart'].engineSeries()||[]).map(s=>s.instanceId+'::'+s.plotKey+'#'+s.data.length)})`)
