@@ -266,6 +266,9 @@ try {
   // (it happened on 2026-11-12). The state in force is recorded and printed with every result.
   out.warmSwitch = await run(`(()=>{try{return localStorage.getItem('uct.indwarm.off')}catch(e){return 'unreadable'}})()`)
   console.log(`indicator pre-load: ${out.warmSwitch === '1' ? 'SWITCHED OFF in this profile (uct.indwarm.off=1)' : 'on'}`)
+  // every per-browser switch this work reads, as this profile holds it for THIS run
+  out.switches = await run(`(()=>{const o={};for(const k of ['uct.indwarm.off','uct.rsdisk.off','uct.restgate.off','uct.plotwindow.off']){try{o[k]=localStorage.getItem(k)}catch(e){o[k]='unreadable'}}return o})()`)
+  console.log(`switches: ${JSON.stringify(out.switches)}`)
   await charts()
   await waitFor(`!!(window.__uctChartDebug && window.__uctChartDebug['flip-chart'] && window.__uctChartDebug['flip-chart'].newestBar())`, 240000)
   await waitFor(`document.querySelectorAll('[data-watch-sym]').length >= 8`, 90000)
@@ -322,6 +325,16 @@ try {
   const PEEK = arg('peek', '')
   const peek = async () => { try { return await run(`(()=>{try{return JSON.parse(JSON.stringify(${PEEK}))}catch(e){return 'peek threw: '+e.message}})()`) } catch (e) { return `peek failed: ${e.message}` } }
   if (PEEK) { out.peek = await peek(); save() }
+  // --act=<js expression, may be a promise>: evaluated in the page after the flips and AWAITED,
+  // the JSON-able result kept as out.act. For doing something to the chart that takes time to
+  // answer (zoom out, wait for the repaint, read what the series hold now).
+  // (--act=@<file> reads the expression from a file: a long one does not survive a shell's quoting)
+  const actArg = arg('act', '')
+  const ACT = actArg.startsWith('@') ? readFileSync(actArg.slice(1), 'utf8').trim() : actArg
+  if (ACT) {
+    try { out.act = await run(`(async()=>{try{return JSON.parse(JSON.stringify(await (${ACT})))}catch(e){return 'act threw: '+e.message}})()`) } catch (e) { out.act = `act failed: ${e.message}` }
+    save()
+  }
   const TFS = arg('tfs', '').split(',').filter(Boolean)
   if (TFS.length) {
     const tfOut = { ...out, flips: [], tfSwitches: TFS }
