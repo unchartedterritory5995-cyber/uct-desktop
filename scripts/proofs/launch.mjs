@@ -168,7 +168,18 @@ if ($script:bestArea -gt 0) { [void][M]::ShowWindow($script:best, 9); [void][M]:
     throw new Error('app page did not appear')
   }
 
-  const close = async ({ keepProfile = false } = {}) => {
+  // graceful: ask the browser to quit (CDP Browser.close) and wait for it before the forced kill, so
+  // it writes what it holds (localStorage commits are deferred; `taskkill /F` loses the pending ones).
+  const close = async ({ keepProfile = false, graceful = false } = {}) => {
+    if (graceful && exit === null) {
+      try {
+        const v = await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()
+        const ws = new WebSocket(v.webSocketDebuggerUrl)
+        await new Promise((r, j) => { ws.addEventListener('open', r); ws.addEventListener('error', j) })
+        ws.send(JSON.stringify({ id: 1, method: 'Browser.close' }))
+        for (let t = 0; t < 15000 && exit === null; t += 250) await sleep(250)
+      } catch { /* fall through to the kill */ }
+    }
     cleanup()
     await sleep(2500)
     if (keepProfile || options.profile) return

@@ -454,6 +454,7 @@ try {
     }
   }
   save()
-  await app.close()
+  // --graceful-close: the browser quits on its own (and writes its pending localStorage) before the kill
+  await app.close({ graceful: !!arg('graceful-close', '') })
 }
 process.exit(exitCode)
