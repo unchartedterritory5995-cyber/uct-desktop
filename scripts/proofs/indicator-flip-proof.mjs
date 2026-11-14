@@ -269,6 +269,44 @@ try {
   // every per-browser switch this work reads, as this profile holds it for THIS run
   out.switches = await run(`(()=>{const o={};for(const k of ['uct.indwarm.off','uct.rsdisk.off','uct.restgate.off','uct.plotwindow.off']){try{o[k]=localStorage.getItem(k)}catch(e){o[k]='unreadable'}}return o})()`)
   console.log(`switches: ${JSON.stringify(out.switches)}`)
+  // --idbtrace: every IndexedDB transaction the page opens (database, mode, stores, when it was
+  // created, when it finished) and every get/put request inside it (store, key, how long), into
+  // out.idbTrace for idb-trace-report.mjs. Installed before the page loads; times are the page's
+  // performance.now(), the same clock the flips' `key` uses. Observes only: nothing is changed.
+  if (arg('idbtrace', '')) {
+    await c.send('Page.addScriptToEvaluateOnNewDocument', { source: `(()=>{
+      if (window.__idbTrace) return
+      const T = window.__idbTrace = { tx: [], req: [] }
+      const now = () => performance.now()
+      const keyOf = (k) => { try { return typeof k === 'string' ? k.slice(0, 40) : JSON.stringify(k).slice(0, 40) } catch (e) { return '?' } }
+      const tx0 = IDBDatabase.prototype.transaction
+      IDBDatabase.prototype.transaction = function (stores, mode, opts) {
+        const tx = tx0.call(this, stores, mode, opts)
+        const rec = { db: this.name, mode: mode || 'readonly', stores: [].concat(stores).join(','), t0: now(), end: null, how: null, n: 0 }
+        if (T.tx.length < 60000) T.tx.push(rec)
+        tx.__rec = rec
+        tx.addEventListener('complete', () => { rec.end = now(); rec.how = 'complete' })
+        tx.addEventListener('abort', () => { rec.end = now(); rec.how = 'abort' })
+        tx.addEventListener('error', () => { if (!rec.end) { rec.end = now(); rec.how = 'error' } })
+        return tx
+      }
+      for (const op of ['get', 'put', 'getAll', 'delete', 'add', 'openCursor', 'count', 'clear']) {
+        const f = IDBObjectStore.prototype[op]
+        if (!f) continue
+        IDBObjectStore.prototype[op] = function (...a) {
+          const r = f.apply(this, a)
+          const tx = this.transaction && this.transaction.__rec
+          if (tx) tx.n++
+          const rec = { op, store: this.name, key: keyOf(op === 'put' || op === 'add' ? a[1] ?? (a[0] && (a[0].key || a[0].id)) : a[0]), t0: now(), end: null, tx: tx ? T.tx.indexOf(tx) : -1 }
+          if (T.req.length < 200000) T.req.push(rec)
+          r.addEventListener('success', () => { rec.end = now() })
+          r.addEventListener('error', () => { rec.end = now(); rec.err = 1 })
+          return r
+        }
+      }
+    })()` })
+    out.idbtrace = true
+  }
   await charts()
   await waitFor(`!!(window.__uctChartDebug && window.__uctChartDebug['flip-chart'] && window.__uctChartDebug['flip-chart'].newestBar())`, 240000)
   await waitFor(`document.querySelectorAll('[data-watch-sym]').length >= 8`, 90000)
@@ -322,6 +360,10 @@ try {
   // --peek=<js expression>: evaluated in the page after the flips (and again after the timeframe
   // switches), the JSON-able result kept as out.peek / out.peekAfterTfs. For asking the page what
   // it holds at the moment that matters (a storage key, a counter an override chunk keeps).
+  if (out.idbtrace) {
+    out.idbTrace = await run(`(()=>{const T=window.__idbTrace;return T?{tx:T.tx,req:T.req}:null})()`)
+    save()
+  }
   const PEEK = arg('peek', '')
   const peek = async () => { try { return await run(`(()=>{try{return JSON.parse(JSON.stringify(${PEEK}))}catch(e){return 'peek threw: '+e.message}})()`) } catch (e) { return `peek failed: ${e.message}` } }
   if (PEEK) { out.peek = await peek(); save() }
