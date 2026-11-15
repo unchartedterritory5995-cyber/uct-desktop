@@ -270,6 +270,13 @@ try {
   // every per-browser switch this work reads, as this profile holds it for THIS run
   out.switches = await run(`(()=>{const o={};for(const k of ['uct.indwarm.off','uct.rsdisk.off','uct.restgate.off','uct.plotwindow.off']){try{o[k]=localStorage.getItem(k)}catch(e){o[k]='unreadable'}}return o})()`)
   console.log(`switches: ${JSON.stringify(out.switches)}`)
+  // ⛔ EVERY REQUEST FROM THE PAGE LOAD ON, not only those inside a flip (2026-11-15). Each flip's
+  // `res` starts empty, so what the page asked for before the first key press (a list's up-front
+  // warm) was invisible: a run with no server-lane request in it read as "zero requests" while
+  // the warm had answered every row before the walk began. The browser keeps 250 entries by
+  // default; the buffer is raised before the page loads and the whole timeline is kept as
+  // out.allRes after the flips (same clock as each flip's `key`).
+  await c.send('Page.addScriptToEvaluateOnNewDocument', { source: `try{performance.setResourceTimingBufferSize(50000)}catch(e){}` })
   // --idbtrace: every IndexedDB transaction the page opens (database, mode, stores, when it was
   // created, when it finished) and every get/put request inside it (store, key, how long), into
   // out.idbTrace for idb-trace-report.mjs. Installed before the page loads; times are the page's
@@ -365,6 +372,8 @@ try {
   // --peek=<js expression>: evaluated in the page after the flips (and again after the timeframe
   // switches), the JSON-able result kept as out.peek / out.peekAfterTfs. For asking the page what
   // it holds at the moment that matters (a storage key, a counter an override chunk keeps).
+  out.allRes = await run(`performance.getEntriesByType('resource').filter((e)=>e.name.indexOf('/api/')>=0).map((e)=>({u:e.name.replace(location.origin,''),s:Math.round(e.startTime),e:Math.round(e.responseEnd),ttfb:Math.round(e.responseStart-e.startTime),st:(e.serverTiming||[]).map((x)=>x.name+(x.description?'('+x.description+')':'')+'='+Math.round(x.duration)).join(',')}))`)
+  save()
   if (out.idbtrace) {
     out.idbTrace = await run(`(()=>{const T=window.__idbTrace;return T?{tx:T.tx,req:T.req}:null})()`)
     save()
