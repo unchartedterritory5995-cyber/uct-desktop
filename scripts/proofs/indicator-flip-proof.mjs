@@ -29,6 +29,7 @@ const LAST_DWELL = Number(arg('last-dwell', '0'))
 // (<out>.flip<i>.cpuprofile, loadable in DevTools) for indicator-cpu-report.mjs.
 const PROFILE_FLIPS = new Set(arg('cpuprofile', '').split(',').filter(Boolean).map(Number))
 const UPDOWN = arg('pattern', 'down') // down | downup (down N then back up N: revisits)
+const AUTOREPEAT = arg('autorepeat', '') === '1' // a held key (repeat key-downs, one key-up), not taps
 // --stub=ms (LOCAL SANDBOX ONLY): the chart header's small per-symbol reads (research snapshot,
 // adjustment basis, event markers) are answered here from a canned body after `ms`, so a sandbox
 // with no provider data still shows header values and the server makes no provider call for them.
@@ -342,8 +343,12 @@ try {
     const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),now:performance.now()}})()`)
     const profiling = PROFILE_FLIPS.has(i)
     if (profiling) { await c.send('Profiler.enable'); await c.send('Profiler.setSamplingInterval', { interval: 100 }); await c.send('Profiler.start') }
-    await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: K.key, code: K.key, windowsVirtualKeyCode: K.vk, nativeVirtualKeyCode: K.vk })
-    await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: K.key, code: K.key, windowsVirtualKeyCode: K.vk, nativeVirtualKeyCode: K.vk })
+    // --autorepeat=1: a HELD key, as the OS sends it: the first press, then auto-repeated key-downs
+    // (`repeat: true` in the page), and ONE key-up after the last (or before a direction change).
+    const firstOfKey = i === 0 || (UPDOWN === 'downup' && i === FLIPS)
+    const lastOfKey = i === total - 1 || (UPDOWN === 'downup' && i === FLIPS - 1)
+    await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: K.key, code: K.key, windowsVirtualKeyCode: K.vk, nativeVirtualKeyCode: K.vk, ...(AUTOREPEAT && !firstOfKey ? { autoRepeat: true } : {}) })
+    if (!AUTOREPEAT || lastOfKey) await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: K.key, code: K.key, windowsVirtualKeyCode: K.vk, nativeVirtualKeyCode: K.vk })
     if (profiling) {
       await sleep(700)
       const { profile } = await c.send('Profiler.stop')
