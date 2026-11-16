@@ -25,7 +25,7 @@
 // With the market closed it still runs and reports "no priced stream messages" (exit 2).
 import { writeFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
-import { startApp, sleep, BASE } from './launch.mjs'
+import { startApp, sleep, BASE, recordTrace } from './launch.mjs'
 
 const OUT = process.argv[2]
 if (!OUT || OUT.startsWith('--')) { console.error('usage: tick-latency-proof.mjs <out.json> [options]'); process.exit(64) }
@@ -40,6 +40,13 @@ const PROFILE = arg('profile', '')
 // candles only with it ON; without the flag the account's global setting decides (2026-11-16: the
 // bench account has it off, and a premarket run painted nothing: 1,822 messages, 0 candle changes).
 const EXT = arg('ext', '')
+// --cpuprofile: a sampled CPU profile of the page's main thread for the whole measured window, saved as
+// <out>.cpuprofile (loadable in DevTools; summarise with indicator-cpu-report.mjs). Sampling costs a
+// little CPU itself, so a profiled run's frame numbers are not the baseline's.
+const CPU = process.argv.includes('--cpuprofile')
+// --trace=MS: a Chromium trace of the first MS of the measured window, saved as <out>.trace.json for
+// analyze-trace.py (which thread is busy, GPU presents vs raster). Tracing costs CPU too.
+const TRACE_MS = Number(arg('trace', '0')) || 0
 const D = { x: -1440, y: 0, w: 1440, h: 950 } // display 2 (portrait), top half: never the trading monitors
 const COLORS = ['A', 'B', 'C', 'D']
 const chartId = (i) => `tick-chart-${i}`
@@ -198,7 +205,18 @@ try {
   const fc = await run(`window.__tick.frameCount`)
   if (!(fc > 30)) throw new Error(`only ${fc} frames in 1.5 s: the window is not being drawn (covered or minimised)`)
   console.log(`measuring ${SECONDS} s on ${SYMS.join(', ')} @ ${TF} ...`)
-  await sleep(SECONDS * 1000)
+  if (CPU) { await c.send('Profiler.enable'); await c.send('Profiler.setSamplingInterval', { interval: 1000 }); await c.send('Profiler.start') }
+  if (TRACE_MS > 0) {
+    const t0 = Date.now()
+    await recordTrace(PORT, OUT.replace(/\.json$/, '') + '.trace.json', Math.min(TRACE_MS, SECONDS * 1000))
+    out.trace = true
+    await sleep(Math.max(0, SECONDS * 1000 - (Date.now() - t0)))
+  } else await sleep(SECONDS * 1000)
+  if (CPU) {
+    const { profile } = await c.send('Profiler.stop')
+    writeFileSync(OUT.replace(/\.json$/, '') + '.cpuprofile', JSON.stringify(profile))
+    out.cpuprofile = true
+  }
   const raw = await run(`(()=>{const T=window.__tick; T.on=false; return {t0:T.t0, end:performance.timeOrigin+performance.now(), msgs:T.msgs, frames:T.frames, opens:T.opens, dropped:T.dropped, frameCount:T.frameCount, longFrames:T.longFrames}})()`)
   out.clockAfter = await clockNow()
 
