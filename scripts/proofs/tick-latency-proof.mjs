@@ -272,6 +272,43 @@ try {
     legs.receiveToPaint.push(rp); s.receiveToPaint.push(rp)
     if (tr != null && tr > -250 && tr < 60000) { legs.tradeToPaint.push(tr + rp); s.tradeToPaint.push(tr + rp) }
   }
+  // receive -> FRESH: how long until the chart shows this message's price OR a newer one for the
+  // same symbol. In a fast market most prices are replaced before any paint (the page coalesces),
+  // so "this exact price painted" misses them, and a price that RECURS seconds later is matched
+  // late (2026-11-16 regular session: 37% never painted, receive->paint p95 2.5 s). This leg has
+  // neither problem: it is the staleness a member sees. A frame counts when its close equals the
+  // price of a message for that symbol that arrived at or after this one and no later than the frame.
+  {
+    const bySym = {}
+    for (const m of priced) (bySym[m.sym] ||= []).push(m)
+    const fresh = [], tradeFresh = []
+    let stale = 0
+    for (const sym of Object.keys(bySym)) {
+      const ms = bySym[sym].sort((x, y) => x.at - y.at)
+      const fr = framesBy[idOf[sym]] || []
+      let fi = 0
+      for (let i = 0; i < ms.length; i++) {
+        const m = ms[i]
+        while (fi < fr.length && fr[fi].at < m.at) fi++
+        // the chart ALREADY shows this price when the message arrives: fresh at once (frames are
+        // recorded only when the candle changes, so there is no later frame to find)
+        if (fi > 0 && same(fr[fi - 1].close, m.price)) { fresh.push(0); const tr0 = m.tradeTs != null ? (m.at + offset) - m.tradeTs : null; if (tr0 != null && tr0 > -250 && tr0 < 60000) tradeFresh.push(tr0); continue }
+        let hit = null
+        for (let k = fi; k < fr.length && fr[k].at - m.at <= 5000 && !hit; k++) {
+          for (let j = i; j < ms.length && ms[j].at <= fr[k].at; j++) if (same(ms[j].price, fr[k].close)) { hit = fr[k]; break }
+        }
+        if (!hit) { stale++; continue }
+        fresh.push(hit.at - m.at)
+        const tr = m.tradeTs != null ? (m.at + offset) - m.tradeTs : null
+        if (tr != null && tr > -250 && tr < 60000) tradeFresh.push(tr + (hit.at - m.at))
+      }
+    }
+    // the raw material, so a leg can be recomputed later without another live run
+    try { writeFileSync(OUT.replace(/\.json$/, '') + '.raw.json', JSON.stringify({ offset, priced: priced.map((m) => [Math.round(m.at), m.sym, m.price, m.tradeTs, m.src]), frames: raw.frames.map(([at, id, time, close]) => [Math.round(at), id, time, close]), idOf })) } catch (e) { console.log('raw save failed: ' + e.message) }
+    out.freshMs = { receiveToFresh: dist(fresh), tradeToFresh: dist(tradeFresh), notWithin5s: stale }
+    console.log(`receiveToFresh   n=${fresh.length} p50=${out.freshMs.receiveToFresh.p50} p90=${out.freshMs.receiveToFresh.p90} p95=${out.freshMs.receiveToFresh.p95} p99=${out.freshMs.receiveToFresh.p99} max=${out.freshMs.receiveToFresh.max}  (not within 5 s: ${stale})`)
+    console.log(`tradeToFresh     n=${tradeFresh.length} p50=${out.freshMs.tradeToFresh.p50} p90=${out.freshMs.tradeToFresh.p90} p95=${out.freshMs.tradeToFresh.p95} p99=${out.freshMs.tradeToFresh.p99} max=${out.freshMs.tradeToFresh.max}`)
+  }
   // each chart's newest candle at the first and last change seen: says at a glance whether the
   // candles moved at all, and which session the newest one belongs to
   out.ext = EXT === '' ? 'account setting' : EXT === '1'
