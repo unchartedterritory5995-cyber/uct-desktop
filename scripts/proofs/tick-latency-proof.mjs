@@ -20,7 +20,7 @@
 //
 // Usage: node scripts/proofs/tick-latency-proof.mjs <out.json> [--syms=SPY,QQQ,NVDA,AAPL] [--tf=1]
 //          [--seconds=120] [--warmup=8000] [--profile=<dir>] [--port=9443] [--ls=key=value,...]
-//          [--restore=<version>]
+//          [--restore=<version>] [--ext=0|1]
 // Sends no OS keys or clicks. Needs live ticks: premarket (04:00 ET on) or the regular session.
 // With the market closed it still runs and reports "no priced stream messages" (exit 2).
 import { writeFileSync } from 'node:fs'
@@ -36,6 +36,10 @@ const SECONDS = Number(arg('seconds', '120'))
 const WARMUP = Number(arg('warmup', '8000'))
 const PORT = Number(arg('port', '9443'))
 const PROFILE = arg('profile', '')
+// --ext=0|1: the charts' own extended-hours setting. Premarket and after-hours ticks reach the
+// candles only with it ON; without the flag the account's global setting decides (2026-11-16: the
+// bench account has it off, and a premarket run painted nothing: 1,822 messages, 0 candle changes).
+const EXT = arg('ext', '')
 const D = { x: -1440, y: 0, w: 1440, h: 950 } // display 2 (portrait), top half: never the trading monitors
 const COLORS = ['A', 'B', 'C', 'D']
 const chartId = (i) => `tick-chart-${i}`
@@ -156,7 +160,7 @@ try {
   const n = SYMS.length
   const w = Math.floor(24 / n)
   const layout = {
-    widgets: SYMS.map((_, i) => ({ id: chartId(i), type: 'chart', color: COLORS[i], x: i * w, y: 0, w, h: 20, opts: { tf: TF, settings: { indicatorInstances: [] } } })),
+    widgets: SYMS.map((_, i) => ({ id: chartId(i), type: 'chart', color: COLORS[i], x: i * w, y: 0, w, h: 20, opts: { tf: TF, settings: { indicatorInstances: [], ...(EXT !== '' ? { extendedHoursShading: EXT === '1' } : {}) } } })),
     cols: 24,
     version: 1,
   }
@@ -268,6 +272,10 @@ try {
     legs.receiveToPaint.push(rp); s.receiveToPaint.push(rp)
     if (tr != null && tr > -250 && tr < 60000) { legs.tradeToPaint.push(tr + rp); s.tradeToPaint.push(tr + rp) }
   }
+  // each chart's newest candle at the first and last change seen: says at a glance whether the
+  // candles moved at all, and which session the newest one belongs to
+  out.ext = EXT === '' ? 'account setting' : EXT === '1'
+  out.newestCandle = Object.fromEntries(SYMS.map((sym) => { const fr = framesBy[idOf[sym]] || []; const a = fr[0], z = fr[fr.length - 1]; return [sym, a ? { changes: fr.length, firstTime: a.time, firstClose: a.close, lastTime: z.time, lastClose: z.close } : null] }))
   out.priced = { messages: priced.length, withoutTradeTime: noTradeTs, alreadyOnChart: already, neverPainted: missed, chartCloseChanges: raw.frames.length }
   out.legsMs = { tradeToReceive: dist(legs.tradeToReceive), receiveToPaint: dist(legs.receiveToPaint), tradeToPaint: dist(legs.tradeToPaint) }
   out.bySource = Object.fromEntries(Object.entries(bySrc).map(([k, v]) => [k, { n: v.n, alreadyOnChart: v.already, neverPainted: v.missed, tradeToReceive: dist(v.tradeToReceive), receiveToPaint: dist(v.receiveToPaint), tradeToPaint: dist(v.tradeToPaint) }]))
