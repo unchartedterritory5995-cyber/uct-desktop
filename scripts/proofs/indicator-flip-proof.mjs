@@ -42,6 +42,12 @@ const OVERRIDE = arg('override', '')
 // --header=mcap,earn,rating,perf5d,theme,rvol,ipoDate: the chart header's info row shows these fields
 // (the default is market cap, next earnings, UCT rating). For timing the optional ones.
 const HEADER = arg('header', '').split(',').filter(Boolean)
+// --ext=0|1: the chart's own extended-hours setting, written into the test board's chart. Without
+// it the board's chart carries a PARTIAL settings blob, and the app resolves a missing
+// `extendedHoursShading` two ways (the widget: default ON; the chart: the account's global
+// setting), so the symbol handoff prepared the extended-hours 60m series while the chart drew the
+// regular-hours one (found 2026-11-15: a wasted round trip before every 60m paint).
+const EXT = arg('ext', '')
 const D = { x: -1440, y: 0, w: 1440, h: 950 } // display 2 (portrait), top half
 
 const inst = (defId, inputs = {}) => ({ instanceId: `t:${defId}`, defId, inputs, hidden: false })
@@ -230,7 +236,7 @@ try {
   const CHART_W = arg('tfs', '') ? 19 : 16
   const layout = {
     widgets: [
-      { id: 'flip-chart', type: 'chart', color: 'A', x: 0, y: 0, w: CHART_W, h: 20, opts: { tf: TF, settings: { indicatorInstances: SETS[SET], ...(HEADER.length ? { header: { fields: HEADER } } : {}) } } },
+      { id: 'flip-chart', type: 'chart', color: 'A', x: 0, y: 0, w: CHART_W, h: 20, opts: { tf: TF, settings: { indicatorInstances: SETS[SET], ...(EXT !== '' ? { extendedHoursShading: EXT === '1' } : {}), ...(HEADER.length ? { header: { fields: HEADER } } : {}) } } },
       { id: 'flip-wl', type: 'watchlist', color: 'A', x: CHART_W, y: 0, w: 24 - CHART_W, h: 20, opts: { watchKey, watchName: pick.name } },
     ],
     cols: 24,
