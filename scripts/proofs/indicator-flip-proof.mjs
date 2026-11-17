@@ -389,6 +389,10 @@ try {
         await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 })
         await sleep(DWELL)
         const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),title:document.title}})()`)
+        // --dump-times: every candle time the chart holds at the end of the dwell (to find a hole in its history)
+        if (process.argv.includes('--dump-times')) {
+          got.times = await run(`(()=>{const h=(window.__uctChartDebug||{})['flip-chart'];const t=h&&h.renderedTail?h.renderedTail(100000):null;return t?t.map(b=>b.time):null})()`)
+        }
         out.flips.push({ i, dir: 'typed', sym: target, before: before.sig, ...got })
       } else {
         // point at a row JUMP below the selection (wrapping), wait like a member, click it
