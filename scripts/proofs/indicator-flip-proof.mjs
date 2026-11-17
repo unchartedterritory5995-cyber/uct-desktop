@@ -375,7 +375,9 @@ try {
       if (UPDOWN === 'typed') {
         target = TYPED[i]
         // focus the chart region (type-to-search opens on a printable key there)
-        const focused = await run(`(()=>{const W=document.querySelector('${CHART}');const el=W&&(W.querySelector('[tabindex="0"]')||W);if(el&&el.focus){el.focus({preventScroll:true});return document.activeElement===el}return false})()`)
+        // the CHART SURFACE (the focusable element holding the canvas), as a member's click on the chart focuses it;
+        // 2026-11-17: the first [tabindex="0"] in the widget became a header button (chartMetaItemBtn) and typing went nowhere
+        const focused = await run(`(()=>{const W=document.querySelector('${CHART}');const all=W?[...W.querySelectorAll('[tabindex="0"]')]:[];const el=all.find(e=>e.querySelector('canvas'))||all[0]||W;if(el&&el.focus){el.focus({preventScroll:true});return document.activeElement===el}return false})()`)
         if (!focused) throw new Error('could not focus the chart for type-to-search')
         for (const ch of target) {
           const vk = ch.charCodeAt(0)
@@ -384,6 +386,10 @@ try {
           await sleep(TYPE_GAP)
         }
         await sleep(TYPED_PAUSE)
+        if (process.argv.includes('--debug-typed')) {
+          const dbg = await run(`(()=>{const a=document.activeElement;const ins=[...document.querySelectorAll('input')].filter(x=>x.offsetParent).map(x=>({ph:x.placeholder||'',v:x.value,cls:String(x.className).slice(0,40)}));const opts=[...document.querySelectorAll('[role=option],[class*="result"],[class*="Result"]')].filter(x=>x.offsetParent).slice(0,4).map(x=>x.textContent.trim().slice(0,30));return {active:(a&&a.tagName)+'.'+String(a&&a.className).slice(0,50),val:a&&a.value,inputs:ins.slice(0,4),opts}})()`)
+          console.log(`typed ${target}: ${JSON.stringify(dbg)}`)
+        }
         const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart)}})()`)
         await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', text: '\r', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 })
         await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 })
