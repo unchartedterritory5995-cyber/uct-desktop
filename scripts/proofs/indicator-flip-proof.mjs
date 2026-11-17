@@ -28,7 +28,18 @@ const LAST_DWELL = Number(arg('last-dwell', '0'))
 // --cpuprofile=i,j: a CPU profile of the 700 ms after the key of those flips, saved beside the output
 // (<out>.flip<i>.cpuprofile, loadable in DevTools) for indicator-cpu-report.mjs.
 const PROFILE_FLIPS = new Set(arg('cpuprofile', '').split(',').filter(Boolean).map(Number))
-const UPDOWN = arg('pattern', 'down') // down | downup (down N then back up N: revisits)
+const UPDOWN = arg('pattern', 'down') // down | downup (down N then back up N: revisits) | typed | jump
+// --pattern=typed --typed=AAA,BBB,...: with the chart focused, TYPE each ticker (one key-down per
+// character, --type-gap ms apart, as a member types), pause --typed-pause ms, then Enter. The flip's
+// key time is the ENTER: what a member waits on after deciding. The type-to-search warm (if any)
+// runs during the typing, exactly as for a member.
+// --pattern=jump: POINT at a row --jump rows below the selection (outside the ±6 the list holds),
+// --hover ms, then click it. The flip's key time is the CLICK.
+const TYPED = arg('typed', '').split(',').map((s) => s.trim().toUpperCase()).filter(Boolean)
+const TYPE_GAP = Number(arg('type-gap', '90'))
+const TYPED_PAUSE = Number(arg('typed-pause', '300'))
+const JUMP = Number(arg('jump', '9'))
+const HOVER = Number(arg('hover', '250'))
 const AUTOREPEAT = arg('autorepeat', '') === '1' // a held key (repeat key-downs, one key-up), not taps
 // --stub=ms (LOCAL SANDBOX ONLY): the chart header's small per-symbol reads (research snapshot,
 // adjustment basis, event markers) are answered here from a canned body after `ms`, so a sandbox
@@ -75,7 +86,7 @@ const SAMPLER = `(()=>{
   const tick = (t) => { if (!F.on) return; const o = sigOf(F.chart); const j = JSON.stringify(o); if (j !== prev) { F.frames.push({ t: t, o: o }); prev = j } requestAnimationFrame(tick) };
   requestAnimationFrame(tick);
   try { F.po = new PerformanceObserver((l) => { for (const e of l.getEntries()) { if (e.name.indexOf('/api/') >= 0) F.res.push({ u: e.name.replace(location.origin, ''), s: Math.round(e.startTime), e: Math.round(e.responseEnd), ttfb: Math.round(e.responseStart - e.startTime), bytes: e.transferSize, st: (e.serverTiming || []).map((x) => x.name + (x.description ? '(' + x.description + ')' : '') + '=' + Math.round(x.duration)).join(',') }) } }); F.po.observe({ type: 'resource', buffered: false }) } catch (e) {}
-  window.addEventListener('keydown', (e) => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp') F.keys.push(performance.now()) }, true);
+  window.addEventListener('keydown', (e) => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || (F.enterKeys && e.key === 'Enter')) F.keys.push(performance.now()) }, true);
   // main-thread long tasks (>50 ms): what the page was busy with around a flip
   F.long = [];
   try { new PerformanceObserver((l) => { for (const e of l.getEntries()) { if (F.long.length < 400) F.long.push({ s: Math.round(e.startTime), d: Math.round(e.duration) }) } }).observe({ type: 'longtask', buffered: false }) } catch (e) {}
@@ -354,7 +365,46 @@ try {
   await run(`(()=>{const r=document.querySelector('[data-watch-sym]');r.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));r.click();return r.getAttribute('data-watch-sym')})()`, true)
   await sleep(DWELL + 1500)
 
-  const total = UPDOWN === 'downup' ? FLIPS * 2 : FLIPS
+  if (UPDOWN === 'typed' || UPDOWN === 'jump') {
+    if (UPDOWN === 'typed' && !TYPED.length) throw new Error('--pattern=typed needs --typed=AAA,BBB,...')
+    const n = UPDOWN === 'typed' ? TYPED.length : FLIPS
+    const CHART = '[data-widget-id="flip-chart"]'
+    for (let i = 0; i < n; i++) {
+      await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;F.enterKeys=${UPDOWN === 'typed'};return true})()`)
+      let target = null
+      if (UPDOWN === 'typed') {
+        target = TYPED[i]
+        // focus the chart region (type-to-search opens on a printable key there)
+        const focused = await run(`(()=>{const W=document.querySelector('${CHART}');const el=W&&(W.querySelector('[tabindex="0"]')||W);if(el&&el.focus){el.focus({preventScroll:true});return document.activeElement===el}return false})()`)
+        if (!focused) throw new Error('could not focus the chart for type-to-search')
+        for (const ch of target) {
+          const vk = ch.charCodeAt(0)
+          await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: ch, code: /[A-Z]/.test(ch) ? `Key${ch}` : '', text: ch, unmodifiedText: ch, windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk })
+          await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: ch, code: /[A-Z]/.test(ch) ? `Key${ch}` : '', windowsVirtualKeyCode: vk, nativeVirtualKeyCode: vk })
+          await sleep(TYPE_GAP)
+        }
+        await sleep(TYPED_PAUSE)
+        const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart)}})()`)
+        await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', text: '\r', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 })
+        await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 })
+        await sleep(DWELL)
+        const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),title:document.title}})()`)
+        out.flips.push({ i, dir: 'typed', sym: target, before: before.sig, ...got })
+      } else {
+        // point at a row JUMP below the selection (wrapping), wait like a member, click it
+        const pick2 = await run(`(()=>{const rows=[...document.querySelectorAll('[data-watch-sym]')];const sel=rows.findIndex(r=>/listRowSelected/.test(String(r.className))||r.getAttribute('aria-selected')==='true');const at=((sel<0?0:sel)+${JUMP})%rows.length;const r=rows[at];r.scrollIntoView({block:'center'});for(const t of ['pointerover','pointerenter','mouseover','mouseenter'])r.dispatchEvent(new (t.startsWith('pointer')?PointerEvent:MouseEvent)(t,{bubbles:t.endsWith('over')}));return r.getAttribute('data-watch-sym')})()`)
+        target = pick2
+        await sleep(HOVER)
+        const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart)}})()`)
+        await run(`(()=>{const r=document.querySelector('[data-watch-sym=${JSON.stringify(String(target))}]');window.__flip.keys.push(performance.now());r.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));r.click();return true})()`)
+        await sleep(DWELL)
+        const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),title:document.title}})()`)
+        out.flips.push({ i, dir: 'jump', sym: target, before: before.sig, ...got })
+      }
+      save()
+    }
+  }
+  const total = UPDOWN === 'typed' || UPDOWN === 'jump' ? 0 : (UPDOWN === 'downup' ? FLIPS * 2 : FLIPS)
   for (let i = 0; i < total; i++) {
     const K = (UPDOWN === 'downup' && i >= FLIPS) ? { key: 'ArrowUp', vk: 38 } : { key: 'ArrowDown', vk: 40 }
     const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),now:performance.now()}})()`)
