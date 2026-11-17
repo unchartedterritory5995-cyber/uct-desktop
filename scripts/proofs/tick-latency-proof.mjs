@@ -174,7 +174,9 @@ try {
   const groups = Object.fromEntries(COLORS.map((col, i) => [col, SYMS[i] || null]))
   originalVersion = await board.head()
   out.boardVersionBefore = originalVersion
-  const applied = await board.apply(originalVersion, { charts_workspace_layout: JSON.stringify(layout), charts_workspace_groups: JSON.stringify(groups) })
+  // ⛔ Pointer cleared with the board: an account whose active layout is still 'uct-default' is
+  // moved to a BLANK board on load (Signature Release 2, applyUctDefault). Restore puts it back.
+  const applied = await board.apply(originalVersion, { charts_workspace_layout: JSON.stringify(layout), charts_workspace_groups: JSON.stringify(groups), charts_active_template: 'null' })
   if (applied.status !== 200) throw new Error(`test board refused: ${applied.status} ${JSON.stringify(applied.body).slice(0, 300)}`)
   save()
 

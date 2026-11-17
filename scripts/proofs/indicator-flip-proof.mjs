@@ -256,7 +256,11 @@ try {
     if (only) { originalVersion = Number(only); out.restoreOnly = originalVersion; throw new Error('restore-only run: no measurement') }
     originalVersion = await board.head()
     out.boardVersionBefore = originalVersion
-    const applied = await board.apply(originalVersion, { charts_workspace_layout: JSON.stringify(layout), charts_workspace_groups: JSON.stringify(groups) })
+    // ⛔ The active-layout pointer is cleared with the board (2026-11-16): Signature Release 2
+    // moves an account whose pointer is still 'uct-default' to a BLANK board on load
+    // (ChartsWorkspace applyUctDefault), so a test board applied under that pointer never
+    // mounts ("reading 'engineSeries'" of undefined). The restore puts the pointer back.
+    const applied = await board.apply(originalVersion, { charts_workspace_layout: JSON.stringify(layout), charts_workspace_groups: JSON.stringify(groups), charts_active_template: 'null' })
     if (applied.status !== 200) throw new Error(`test board refused: ${applied.status} ${JSON.stringify(applied.body).slice(0, 300)}`)
   }
   save()
