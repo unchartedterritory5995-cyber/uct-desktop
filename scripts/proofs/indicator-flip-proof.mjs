@@ -210,6 +210,21 @@ try {
       setTimeout(() => c.send('Fetch.continueRequest', { requestId }).catch(() => {}), DELAY_BARS)
     })
   }
+  // --console=<regex>: print (and keep in the result) every page console message matching it, e.g. a
+  // throwaway instrumented build's `[lakedbg]` lines. Messages carry their own page clock if they need one.
+  const CONSOLE = arg('console', '')
+  if (CONSOLE) {
+    const re = new RegExp(CONSOLE)
+    out.console = []
+    await c.send('Runtime.enable')
+    c.on((m) => {
+      if (m.method !== 'Runtime.consoleAPICalled') return
+      const text = (m.params.args || []).map((a) => (a.value !== undefined ? (typeof a.value === 'string' ? a.value : JSON.stringify(a.value)) : (a.description || a.type))).join(' ')
+      if (!re.test(text)) return
+      out.console.push(text)
+      console.log(`console ${text}`)
+    })
+  }
   if (STUB > 0) {
     if (!LOCAL) throw new Error('--stub is for the local sandbox only: production is measured as it is')
     out.stub = { ms: STUB, asked: [] }
