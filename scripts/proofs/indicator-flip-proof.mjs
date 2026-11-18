@@ -45,6 +45,9 @@ const AUTOREPEAT = arg('autorepeat', '') === '1' // a held key (repeat key-downs
 // adjustment basis, event markers) are answered here from a canned body after `ms`, so a sandbox
 // with no provider data still shows header values and the server makes no provider call for them.
 const STUB = Number(arg('stub', '0'))
+// --delay-bars=MS: hold every /api/bars/<SYM> answer MS in the browser (a cold bar-server read, e.g.
+// FROG 5m bars(sqlite)=1523 on 2026-11-17) to prove what a chart shows while its first answer is slow.
+const DELAY_BARS = Number(arg('delay-bars', '0'))
 // --override=<url part>=<file>: THIS RUN'S BROWSER ONLY is handed <file> wherever it asks for a
 // script whose URL contains <url part> (e.g. vendor-charts-=C:/x/vendor-charts-patched.js): a
 // candidate chunk measured against live data before it is merged. Nothing is sent to the server.
@@ -176,12 +179,14 @@ try {
     await c.send('Network.enable')
     await c.send('Network.setCacheDisabled', { cacheDisabled: true })
     await c.send('Network.setBypassServiceWorker', { bypass: true })
-    await c.send('Fetch.enable', { patterns: [{ urlPattern: `${origin}/assets/*` }, { urlPattern: `${origin}/*`, resourceType: 'Document' }] })
+    await c.send('Fetch.enable', { patterns: [{ urlPattern: `${origin}/assets/*` }, { urlPattern: `${origin}/*`, resourceType: 'Document' },
+      ...(DELAY_BARS > 0 ? [{ urlPattern: '*/api/bars/*' }] : [])] })
     const answer = (requestId, type, buf) => c.send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: type }, { name: 'Cache-Control', value: 'no-store' }, { name: 'Access-Control-Allow-Origin', value: '*' }], body: Buffer.from(buf).toString('base64') }).catch(() => {})
     c.on((m) => {
       if (m.method !== 'Fetch.requestPaused') return
       const { requestId, request, resourceType } = m.params
       const u = new URL(request.url)
+      if (DELAY_BARS > 0 && u.pathname.startsWith('/api/bars/')) return    // the --delay-bars handler owns these
       if (u.pathname.startsWith('/assets/')) {
         const f = join(DIST, decodeURIComponent(u.pathname))
         if (existsSync(f)) { out.dist.served += 1; answer(requestId, TYPES[extname(f).toLowerCase()] || 'application/octet-stream', readFileSync(f)); return }
@@ -192,6 +197,17 @@ try {
         return
       }
       c.send('Fetch.continueRequest', { requestId }).catch(() => {})
+    })
+  }
+  if (DELAY_BARS > 0) {
+    out.delayBars = { ms: DELAY_BARS, held: 0 }
+    if (!DIST) await c.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/bars/*' }] })
+    c.on((m) => {
+      if (m.method !== 'Fetch.requestPaused') return
+      const { requestId, request } = m.params
+      if (!new URL(request.url).pathname.startsWith('/api/bars/')) return
+      out.delayBars.held += 1
+      setTimeout(() => c.send('Fetch.continueRequest', { requestId }).catch(() => {}), DELAY_BARS)
     })
   }
   if (STUB > 0) {
