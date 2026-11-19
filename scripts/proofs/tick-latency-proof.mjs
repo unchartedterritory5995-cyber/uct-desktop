@@ -192,6 +192,24 @@ try {
 
   // --dist=<dir> (ported from indicator-flip-proof, 2026-11-19): THIS RUN'S BROWSER ONLY runs a local candidate
   // build against production's live stream and API (an A/B of a frontend change on real ticks; nothing published).
+  // --stream-edge=1: THIS browser's live bar stream through stream-edge (the canary cookie the edge Worker
+  // routes on, path /api/stream/bars), so web and stream-edge can be measured on the same ticks. Recorded as
+  // out.streamEdgeCanary; the stream response's own X-Stream-Edge header is what proves who served it.
+  if (arg('stream-edge', '') === '1') {
+    const host = new URL(BASE).hostname
+    await c.send('Network.enable')
+    const ok = await c.send('Network.setCookie', { name: 'uct_stream_edge', value: '1', domain: host, path: '/api/stream/bars', secure: true, httpOnly: false, sameSite: 'Lax' })
+    out.streamEdgeCanary = !!(ok && ok.success !== false)
+  }
+  // Who answered each /api/stream/bars open: stream-edge sets X-Stream-Edge; web sends none.
+  out.streamServedBy = []
+  await c.send('Network.enable')
+  c.on((m) => {
+    if (m.method !== 'Network.responseReceived' || !String(m.params?.response?.url || '').includes('/api/stream/bars')) return
+    const h = m.params.response.headers || {}
+    const by = h['X-Stream-Edge'] || h['x-stream-edge'] || 'web (no edge header)'
+    if (out.streamServedBy.length < 20) out.streamServedBy.push(by)
+  })
   const DIST = arg('dist', '')
   if (DIST) {
     const { existsSync } = await import('node:fs')

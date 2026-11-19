@@ -74,14 +74,23 @@ const SETS = {
 }
 if (!SETS[SET]) throw new Error(`unknown --set ${SET}`)
 
+// --cheap-sampler=1: read the chart's bar COUNT only when its newest bar (time|close) changes, or every 30th
+// frame. `count` is series.data().length, a copy of every row: read per frame it cost 80-136 ms of each
+// 60m flip's first 700 ms (2026-11-19 CPU profiles), inflating every long task this proof reports. Use
+// it for freeze (long-task) runs; leave it off where a count-only change must be timed to the frame.
+const CHEAP_SAMPLER = arg('cheap-sampler', '') === '1'
 const SAMPLER = `(()=>{
+  const CHEAP = ${CHEAP_SAMPLER ? 'true' : 'false'};
   if (window.__flip) { window.__flip.on = false }
   const F = window.__flip = { on: true, frames: [], res: [], keys: [], t0: performance.now() };
   const lastFinite = (d) => { for (let i = d.length - 1, n = 0; i >= 0 && n < 400; i--, n++) { const v = d[i] && d[i].value; if (typeof v === 'number' && Number.isFinite(v)) return d[i].time + '=' + v } return 'none' };
   const sigOf = (id) => {
     const h = (window.__uctChartDebug || {})[id]; if (!h) return null;
     const nb = h.newestBar(); const es = h.engineSeries() || [];
-    const o = { c: nb ? nb.count + '|' + nb.time + '|' + nb.close : 'none', s: {} };
+    const tc = nb ? nb.time + '|' + nb.close : null; F.fc = (F.fc || 0) + 1;
+    let cnt = F.lastCount;
+    if (!CHEAP || !nb || tc !== F.lastTC || F.fc % 30 === 0 || cnt == null) { cnt = nb ? nb.count : null; F.lastTC = tc; F.lastCount = cnt }
+    const o = { c: nb ? cnt + '|' + nb.time + '|' + nb.close : 'none', s: {} };
     for (const s of es) { const k = s.instanceId + '::' + s.plotKey; let n = s.data.length, lf = lastFinite(s.data); for (const r of s.runs) { n += r.length; if (lf === 'none') lf = lastFinite(r) } o.s[k] = n + '|' + lf }
     return o };
   F.sigOf = sigOf;
@@ -123,7 +132,7 @@ const RELOAD_SAMPLER = `(()=>{
   try { new PerformanceObserver((l) => { for (const e of l.getEntries()) { if (e.name.indexOf('/api/signature/') >= 0) R.res.push({ u: e.name.replace(location.origin, '').slice(0, 60), s: Math.round(e.startTime), e: Math.round(e.responseEnd) }) } }).observe({ type: 'resource', buffered: true }) } catch (e) {}
 })()`
 
-const out = { startedUtc: new Date().toISOString(), tf: TF, set: SET, flips: [], dwell: DWELL }
+const out = { startedUtc: new Date().toISOString(), tf: TF, set: SET, flips: [], dwell: DWELL, cheapSampler: CHEAP_SAMPLER }
 const save = () => writeFileSync(OUT, JSON.stringify(out, null, 1))
 // --headless=1 (+ --chrome-version=<x.y.z.w>): an OFF-SCREEN Chrome (headless=new draws real frames) for a run
 // while every display holds the owner's windows (same option as tick-latency-proof, 2026-11-19).
