@@ -95,7 +95,7 @@ const SAMPLER = `(()=>{
     return o };
   F.sigOf = sigOf;
   let prev = '';
-  const tick = (t) => { if (!F.on) return; const o = sigOf(F.chart); const j = JSON.stringify(o); if (j !== prev) { F.frames.push({ t: t, o: o }); prev = j } requestAnimationFrame(tick) };
+  const tick = (t) => { if (!F.on) return; const n = performance.now(); const o = sigOf(F.chart); const j = JSON.stringify(o); if (j !== prev) { F.frames.push({ t: t, n: n, o: o }); prev = j } requestAnimationFrame(tick) };
   requestAnimationFrame(tick);
   try { F.po = new PerformanceObserver((l) => { for (const e of l.getEntries()) { if (e.name.indexOf('/api/') >= 0) F.res.push({ u: e.name.replace(location.origin, ''), s: Math.round(e.startTime), e: Math.round(e.responseEnd), ttfb: Math.round(e.responseStart - e.startTime), bytes: e.transferSize, st: (e.serverTiming || []).map((x) => x.name + (x.description ? '(' + x.description + ')' : '') + '=' + Math.round(x.duration)).join(',') }) } }); F.po.observe({ type: 'resource', buffered: false }) } catch (e) {}
   window.addEventListener('keydown', (e) => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || (F.enterKeys && e.key === 'Enter')) F.keys.push(performance.now()) }, true);
