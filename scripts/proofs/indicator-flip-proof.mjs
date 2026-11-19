@@ -125,13 +125,21 @@ const RELOAD_SAMPLER = `(()=>{
 
 const out = { startedUtc: new Date().toISOString(), tf: TF, set: SET, flips: [], dwell: DWELL }
 const save = () => writeFileSync(OUT, JSON.stringify(out, null, 1))
-const app = await startApp('chrome', PORT, ['--disable-features=CalculateNativeWinOcclusion', `--window-position=${D.x},${D.y}`], PROFILE ? { profile: PROFILE } : {})
+// --headless=1 (+ --chrome-version=<x.y.z.w>): an OFF-SCREEN Chrome (headless=new draws real frames) for a run
+// while every display holds the owner's windows (same option as tick-latency-proof, 2026-11-19).
+const HEADLESS = arg('headless', '') === '1'
+const CHROME_VERSION = arg('chrome-version', '')
+const launchArgs = HEADLESS
+  ? ['--headless=new', '--window-size=1440,950', ...(CHROME_VERSION ? [`--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`] : [])]
+  : ['--disable-features=CalculateNativeWinOcclusion', `--window-position=${D.x},${D.y}`]
+const app = await startApp('chrome', PORT, launchArgs, PROFILE ? { profile: PROFILE } : {})
 let board = null
 let originalVersion = null
 let exitCode = 0
 try {
   const { c, run, waitFor, charts } = app
-  app.placeMainWindow(D.x, D.y, D.w, D.h)
+  if (!HEADLESS) app.placeMainWindow(D.x, D.y, D.w, D.h)
+  out.headless = HEADLESS
   board = {
     head: () => run(`fetch('/api/workspace/doc?board=charts',{credentials:'include'}).then(r=>r.json()).then(j=>j.version)`),
     apply: (base, prefs) => run(`fetch('/api/workspace/doc/apply',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:${JSON.stringify(JSON.stringify({ base_version: base, board: 'charts', prefs }))}}).then(async r=>({status:r.status,body:await r.json().catch(()=>null)}))`),
