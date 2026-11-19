@@ -23,7 +23,7 @@
 //          [--restore=<version>] [--ext=0|1]
 // Sends no OS keys or clicks. Needs live ticks: premarket (04:00 ET on) or the regular session.
 // With the market closed it still runs and reports "no priced stream messages" (exit 2).
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, readFileSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { startApp, sleep, BASE, recordTrace } from './launch.mjs'
 
@@ -131,13 +131,23 @@ const dist = (xs) => ({ n: xs.length, p50: pct(xs, 0.5), p90: pct(xs, 0.9), p95:
 const out = { proof: 'tick-latency', base: BASE, syms: SYMS, tf: TF, seconds: SECONDS, startedAt: new Date().toISOString() }
 const save = () => writeFileSync(OUT, JSON.stringify(out, null, 1))
 
-const app = await startApp('chrome', PORT, ['--disable-features=CalculateNativeWinOcclusion', `--window-position=${D.x},${D.y}`], PROFILE ? { profile: PROFILE } : {})
+// --headless=1: an OFF-SCREEN Chrome (headless=new renders real frames, rAF included) for a run while every
+// display holds the owner's own windows (2026-11-19 08:40 CT: the portrait display was covered by Discord and
+// Webull at the open, 0 frames drawn, no measurement). The user agent is the regular Chrome one (the edge
+// refuses a headless signature). What it does NOT include: the display's own scan-out after the frame.
+const HEADLESS = arg('headless', '') === '1'
+const CHROME_VERSION = arg('chrome-version', '')
+const headlessArgs = HEADLESS
+  ? ['--headless=new', '--window-size=1440,950', ...(CHROME_VERSION ? [`--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`] : [])]
+  : ['--disable-features=CalculateNativeWinOcclusion', `--window-position=${D.x},${D.y}`]
+const app = await startApp('chrome', PORT, headlessArgs, PROFILE ? { profile: PROFILE } : {})
 let board = null
 let originalVersion = null
 let exitCode = 0
 try {
   const { c, run, waitFor, charts } = app
-  app.placeMainWindow(D.x, D.y, D.w, D.h)
+  if (!HEADLESS) app.placeMainWindow(D.x, D.y, D.w, D.h)
+  out.headless = HEADLESS
   board = {
     head: () => run(`fetch('/api/workspace/doc?board=charts',{credentials:'include'}).then(r=>r.json()).then(j=>j.version)`),
     apply: (base, prefs) => run(`fetch('/api/workspace/doc/apply',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:${JSON.stringify(JSON.stringify({ base_version: base, board: 'charts', prefs }))}}).then(async r=>({status:r.status,body:await r.json().catch(()=>null)}))`),
@@ -180,6 +190,39 @@ try {
   if (applied.status !== 200) throw new Error(`test board refused: ${applied.status} ${JSON.stringify(applied.body).slice(0, 300)}`)
   save()
 
+  // --dist=<dir> (ported from indicator-flip-proof, 2026-11-19): THIS RUN'S BROWSER ONLY runs a local candidate
+  // build against production's live stream and API (an A/B of a frontend change on real ticks; nothing published).
+  const DIST = arg('dist', '')
+  if (DIST) {
+    const { existsSync } = await import('node:fs')
+    const { join, extname } = await import('node:path')
+    const TYPES = { '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.html': 'text/html; charset=utf-8', '.json': 'application/json', '.map': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.ico': 'image/x-icon', '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.wasm': 'application/wasm' }
+    const indexHtml = readFileSync(join(DIST, 'index.html'))
+    const entry = (String(indexHtml).match(/\/assets\/index-[\w-]+\.js/) || [''])[0]
+    if (!entry) throw new Error('--dist: no /assets/index-*.js in its index.html (is it a vite build?)')
+    out.dist = { dir: DIST, entry, documents: 0, served: 0, passedOn: [] }
+    const origin = new URL(BASE).origin
+    await c.send('Network.enable')
+    await c.send('Network.setCacheDisabled', { cacheDisabled: true })
+    await c.send('Network.setBypassServiceWorker', { bypass: true })
+    await c.send('Fetch.enable', { patterns: [{ urlPattern: `${origin}/assets/*` }, { urlPattern: `${origin}/*`, resourceType: 'Document' }] })
+    const answer = (requestId, type, buf) => c.send('Fetch.fulfillRequest', { requestId, responseCode: 200, responseHeaders: [{ name: 'Content-Type', value: type }, { name: 'Cache-Control', value: 'no-store' }, { name: 'Access-Control-Allow-Origin', value: '*' }], body: Buffer.from(buf).toString('base64') }).catch(() => {})
+    c.on((m) => {
+      if (m.method !== 'Fetch.requestPaused') return
+      const { requestId, request, resourceType } = m.params
+      const u = new URL(request.url)
+      if (u.pathname.startsWith('/assets/')) {
+        const f = join(DIST, decodeURIComponent(u.pathname))
+        if (existsSync(f)) { out.dist.served += 1; answer(requestId, TYPES[extname(f).toLowerCase()] || 'application/octet-stream', readFileSync(f)); return }
+        if (out.dist.passedOn.length < 40) out.dist.passedOn.push(u.pathname)
+      } else if (resourceType === 'Document' && !u.pathname.startsWith('/api/')) {
+        out.dist.documents += 1
+        answer(requestId, TYPES['.html'], indexHtml)
+        return
+      }
+      c.send('Fetch.continueRequest', { requestId }).catch(() => {})
+    })
+  }
   await c.send('Page.addScriptToEvaluateOnNewDocument', { source: TAP })
   await charts()
   const ids = SYMS.map((_, i) => chartId(i))
