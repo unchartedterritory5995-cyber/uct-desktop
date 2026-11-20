@@ -2,6 +2,15 @@
 
 Last updated 2026-11-12 ~19:50 CT by an agent session. Read this first after a restart or a switch.
 
+## Chart canary inside the nightly speed check (2026-11-20)
+
+- **What:** `scripts/nightly/chart-canary.mjs` (rules in `chart-canary-rules.mjs`, tests `test/chart-canary.test.ts`) measures production in headless Chrome as the bench member, on its own persistent profile `D:\uct-history\canary\profile`, through `scripts/proofs/indicator-flip-proof.mjs`: two linked charts D + 60m down the S&P 500 (30 switches: both on screen, first candles, each chart), typed never-opened tickers on D/60/5 (6 each, a 6-night block rotation of 36), a 100-switch soak with the JS heap read after a full GC at 0/50/100, and every page error and unhandled rejection. Why: the ~20 MB-per-switch leak (uct-dashboard PR #2228) was live for days and only a hand-run soak found it.
+- **Where it runs:** step 5 of `perf-nightly.mjs`, inside the existing "UCT Desktop Nightly Speed Check" task (23:40 CT, heavy lock). No second task. It needs no monitor, so it also runs on a blind night. `UCT_NIGHTLY_CHARTS=0` turns it off.
+- **Output:** `D:\uct-history\canary\rows.jsonl` (one row per night) and `latest.md` (tonight, baseline medians, REGRESSION lines); raw runs in `runs\<id>\` for 30 days. Nothing is committed.
+- **Rules:** both-on-screen median > 1.5x the baseline median (needs 3 baseline nights, and a second measurement over the limit too), > 300 MB retained per 100 switches, any page error, or any run not completing. Baseline = the last 7 nights that did not alarm, since the last `perf-nightly.mjs --accept`. Posted to ops through the check's own path: the first night, then every 7th.
+- **By hand:** `node scripts/nightly/chart-canary.mjs` queues for the heavy lock itself; `--board-busy=<marker>` waits for another agent's bench-board marker; `--rescore=<runId>` scores a recorded run again after a rules change.
+- **Flip proof additions:** `--tf2`, `--soak-every=N` / `--abort-heap-mb=N`, and `out.pageErrors` in every run.
+
 ## Plans (local, not in this repo)
 
 - **THE PLAN (single authority, v1.5):** `C:\Users\Patrick\reports\UCT desktop app FINAL plan - speed and reliability.md` (backup beside it)
