@@ -9,7 +9,7 @@
 // ⚰️ Why: a base-app leak (~20 MB kept per symbol switch, the page hung near 150) was live for days on
 // 2026-11-20 and was found only by a hand-run soak; switch speed is measured by hand.
 //
-// Usage: node scripts/nightly/chart-canary.mjs [--dir=D:/uct-history/canary] [--trigger=scheduled]
+// Usage: node scripts/nightly/chart-canary.mjs [--dir=D:/uct-history/canary] [--trigger=scheduled] [--board-busy=<marker file>]
 //   Takes the machine's heavy lock itself (normal priority) unless it is already running inside one, so
 //   this one command is the whole job. Rows, raw runs and the profile stay on D:, never in the repo.
 //   The bench board is put back after every run (the proof restores it; the canary checks, and restores it
@@ -60,19 +60,60 @@ function record(row) {
   return R.regressions(row, prior)
 }
 
+// --board-busy=<file>: a marker other bench-board users keep (2026-11-20: proofs run beside the heavy lock with
+// --force-concurrent). While it exists the canary does not queue; inside the lock it creates the marker
+// itself (O_EXCL: {label, runId, pid, startedUtc}) and removes it after the last board restore. A marker
+// found inside the lock sends the lock straight back (exit BUSY) rather than holding the machine's queue
+// while it waits. A canary marker whose pid is dead is stale and is cleared; any other marker is waited on.
+// The heavy lock (never forced here) is what orders every proof that honours it.
+const BOARD_BUSY = arg('board-busy', '')
+const BUSY = 75
+const markerText = () => { try { return readFileSync(BOARD_BUSY, 'utf8').trim() } catch { return null } }
+const pidAlive = (pid) => { try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
+function staleCanaryMarker() {
+  try { const m = JSON.parse(markerText() || ''); return m && m.label === 'chart-canary' && Number.isInteger(m.pid) && !pidAlive(m.pid) ? m : null } catch { return null }
+}
+function boardIsBusy() {
+  if (!BOARD_BUSY || !existsSync(BOARD_BUSY)) return false
+  const stale = staleCanaryMarker()
+  if (stale) { try { rmSync(BOARD_BUSY) } catch { /* raced */ } log(`cleared a stale canary board marker (${stale.runId}, pid ${stale.pid} dead)`); return existsSync(BOARD_BUSY) }
+  return true
+}
+function removeOwnMarker(runId) {
+  try { const m = JSON.parse(markerText() || ''); if (m && m.label === 'chart-canary' && m.runId === runId) rmSync(BOARD_BUSY) } catch { /* not ours, or gone */ }
+}
+
 // ── outer: take the heavy lock, then run this same file inside it ──
 if (!process.env.UCT_HEAVY_LOCK) {
   const runId = makeRunId()
   const t0 = new Date()
-  log(`canary ${runId}: queueing for the heavy lock (normal priority, up to ${LOCK_TIMEOUT_MIN} min)`)
-  const r = spawnSync('python', [LOCK_PY, '--label', 'chart-canary', '--priority', 'normal', '--timeout', String(LOCK_TIMEOUT_MIN * 60), 'run', '--', process.execPath, SELF, ...process.argv.slice(2)],
-    { stdio: 'inherit', env: { ...process.env, CANARY_RUN_ID: runId } })
-  const code = r.status ?? 1
+  const deadline = t0.getTime() + LOCK_TIMEOUT_MIN * 60000
+  let code = 1
+  let busyUntilDeadline = false
+  for (;;) {
+    let said = false
+    while (boardIsBusy() && Date.now() < deadline) {
+      if (!said) { log(`canary ${runId}: the bench board is busy (${BOARD_BUSY}: ${String(markerText()).slice(0, 160)}); waiting`); said = true }
+      await new Promise((r) => setTimeout(r, 60000))
+    }
+    const left = Math.round((deadline - Date.now()) / 1000)
+    if (boardIsBusy() || left < 60) { busyUntilDeadline = boardIsBusy(); code = busyUntilDeadline ? BUSY : 1; break }
+    log(`canary ${runId}: queueing for the heavy lock (normal priority, up to ${Math.round(left / 60)} min)`)
+    const r = spawnSync('python', [LOCK_PY, '--label', 'chart-canary', '--priority', 'normal', '--timeout', String(left), 'run', '--', process.execPath, SELF, ...process.argv.slice(2)],
+      { stdio: 'inherit', env: { ...process.env, CANARY_RUN_ID: runId } })
+    code = r.status ?? 1
+    removeOwnMarker(runId) // a run killed inside the lock cannot remove its own
+    if (code !== BUSY) break
+    log(`canary ${runId}: the board was taken while queued; lock handed back, waiting again`)
+  }
   if (!readRows().some((x) => x.runId === runId)) {
-    // The canary never wrote its row: the lock wait ran out, or the run died. That night is a failure, recorded.
+    // The canary never wrote its row: the lock wait ran out, the board stayed busy, or the run died. Recorded.
     const now = new Date()
+    const why = busyUntilDeadline
+      ? `the bench board stayed busy until the deadline (${LOCK_TIMEOUT_MIN} min; ${BOARD_BUSY}: ${String(markerText()).slice(0, 120)})`
+      : `the heavy-lock run exited ${code} before the canary recorded anything (the wait is ${LOCK_TIMEOUT_MIN} min; see log.txt)`
     record({ v: 1, runId, date: localDate(t0), startedAt: t0.toISOString(), endedAt: now.toISOString(), runtimeS: Math.round((now - t0) / 1000), trigger: TRIGGER, status: 'incomplete',
-      failures: [{ step: 'canary', why: `the heavy-lock run exited ${code} before the canary recorded anything (the lock wait is ${LOCK_TIMEOUT_MIN} min; see log.txt)` }] })
+      failures: [{ step: 'canary', why }] })
     log(`canary ${runId}: no row from the locked run (exit ${code}); recorded as incomplete`)
   }
   process.exit(code)
@@ -80,6 +121,19 @@ if (!process.env.UCT_HEAVY_LOCK) {
 
 // ── inner: the measurement, inside the heavy lock ──
 const runId = process.env.CANARY_RUN_ID || makeRunId()
+if (BOARD_BUSY) {
+  boardIsBusy() // clears a dead canary's marker
+  try {
+    const fd = openSync(BOARD_BUSY, 'wx')
+    writeFileSync(fd, JSON.stringify({ label: 'chart-canary', runId, pid: process.pid, startedUtc: new Date().toISOString(), what: 'flip-proof runs on the bench board (uct-desktop scripts/nightly/chart-canary.mjs)' }) + '\n')
+    closeSync(fd)
+  } catch (e) {
+    if (e.code !== 'EEXIST') throw e
+    log(`canary ${runId}: the bench board is busy (${String(markerText()).slice(0, 160)}): handing the lock back`)
+    process.exit(BUSY)
+  }
+  process.on('exit', () => removeOwnMarker(runId))
+}
 const RUN_DIR = join(DIR, 'runs', runId)
 mkdirSync(RUN_DIR, { recursive: true })
 const started = new Date()
@@ -181,6 +235,7 @@ try {
     results[s.name] = res
     await ensureBoard(res)
   }
+  if (BOARD_BUSY) removeOwnMarker(runId) // every run's board is back: the board is free for the others
 
   // ── score ──
   const usable = (res, scored) => res && res.j && !res.timedOut && res.code === 0 && !res.j.error && scored && scored.painted > 0
