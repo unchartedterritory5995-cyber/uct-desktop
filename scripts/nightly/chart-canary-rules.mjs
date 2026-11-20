@@ -1,11 +1,14 @@
-// Nightly chart canary: the pure rules (scoring the flip proof's output, the trailing nights, the regression
-// lines, the typed-ticker rotation, latest.md). No I/O here, so every rule is unit-tested
-// (test/chart-canary.test.ts). The runner is chart-canary.mjs.
+// Nightly chart canary: the pure rules (scoring the flip proof's output, the baseline nights, the regression
+// lines, when to post, the typed-ticker rotation, latest.md). No I/O here, so every rule is unit-tested
+// (test/chart-canary.test.ts). The runner is chart-canary.mjs. The nightly speed check (perf-nightly.mjs)
+// hosts it, so its baseline follows that check's rule (the last 7 nights that did not alarm, since the last
+// --accept) and a regression is posted the way that check posts one (first night, then every REMIND_EVERY).
+import { REMIND_EVERY } from './compare.mjs'
 
 /** Regression rules (coordinator brief 2026-11-20). */
 export const RULES = {
-  speedRatio: 1.5, // both-on-screen median above 1.5x the trailing median ...
-  speedMinNights: 3, // ... once at least 3 prior nights hold that number
+  speedRatio: 1.5, // both-on-screen median above 1.5x the baseline median ...
+  speedMinNights: 3, // ... once at least 3 baseline nights hold that number
   retainedMBPer100: 300, // JS heap retained (after a full GC) per 100 switches
   trailingNights: 7,
 }
@@ -53,18 +56,30 @@ function censoredStats(painted, missed, dwell) {
   return { medMs: round(median(xs)), p90Ms: round(pct(xs, 0.9)), maxMs: round(xs.length ? Math.max(...xs) : null), censored: missed > 0 }
 }
 
-/** Two linked charts (--tf2): per flip, when BOTH charts show the new symbol (the later of the two frames). */
+/** Two linked charts (--tf2): per flip, when BOTH charts show the new symbol (the later of the two frames:
+ * medMs / p90Ms), when its FIRST candles are on screen (the earlier of the two: `first`), and each chart
+ * on its own (`chart1`, `chart2`). */
 export function scoreTwo(j) {
   const dwell = Number(j.dwell) || 0
-  const both = []
-  let missed = 0
+  const both = [], first = [], c1 = [], c2 = []
+  let missed = 0, firstMissed = 0, c1Missed = 0, c2Missed = 0
   for (const f of j.flips || []) {
     const a = f.key ? firstPaint(f.frames, 'o', f.before && f.before.c, f.key) : null
     const b = f.key ? firstPaint(f.frames, 'o2', f.before2 && f.before2.c, f.key) : null
     if (a && b) both.push(Math.max(a.n, b.n))
     else missed += 1
+    if (a || b) first.push(Math.min(a ? a.n : Infinity, b ? b.n : Infinity))
+    else firstMissed += 1
+    if (a) c1.push(a.n)
+    else c1Missed += 1
+    if (b) c2.push(b.n)
+    else c2Missed += 1
   }
-  return { flips: (j.flips || []).length, painted: both.length, missed, dwellMs: dwell, tf: j.tf, tf2: j.tf2 || null, ...censoredStats(both, missed, dwell) }
+  const part = (xs, m) => { const s = censoredStats(xs, m, dwell); return { medMs: s.medMs, p90Ms: s.p90Ms, missed: m } }
+  return {
+    flips: (j.flips || []).length, painted: both.length, missed, dwellMs: dwell, tf: j.tf, tf2: j.tf2 || null, ...censoredStats(both, missed, dwell),
+    first: part(first, firstMissed), chart1: part(c1, c1Missed), chart2: part(c2, c2Missed),
+  }
 }
 
 /** One chart, typed tickers: when the new symbol is first on screen after the Enter. */
@@ -118,11 +133,25 @@ export function typedForNight(pool, k) {
   return out
 }
 
-/** Prior nights: the newest row of each earlier date, newest last, at most `n`. */
-export function priorNights(rows, today, n = RULES.trailingNights) {
+/** The newest row of each date before `today`, oldest first. */
+export function nightsBefore(rows, today) {
   const byDate = new Map()
   for (const r of rows) if (r && r.date && r.date < today) byDate.set(r.date, r)
-  return [...byDate.keys()].sort().slice(-n).map((d) => byDate.get(d))
+  return [...byDate.keys()].sort().map((d) => byDate.get(d))
+}
+
+/** The baseline nights, by the nightly speed check's rule (compare.mjs baselineFrom): the last `n` earlier
+ * nights that started after the last accept (`since`, an ISO time: --accept makes the next night the new
+ * normal) and whose speed did not alarm (an alarmed night never becomes the yardstick). Oldest first. */
+export function priorNights(rows, today, n = RULES.trailingNights, since = null) {
+  return nightsBefore(rows, today).filter((r) => (since == null || String(r.startedAt || r.date) > since) && !(r.verdict && r.verdict.speed)).slice(-n)
+}
+
+/** When the nightly speed check was last told --accept: its history's last { status: 'reset' } entry, at its
+ * `at` time (entries written before `at` existed: the start of their UTC `date`). null = never. */
+export function lastAccept(history) {
+  const r = [...(history || [])].reverse().find((h) => h && h.status === 'reset')
+  return r ? (r.at || `${r.date}T00:00:00.000Z`) : null
 }
 
 /** Nights a typed run has used so far (distinct earlier dates): the rotation's k, stable for re-runs on one date. */
@@ -137,14 +166,22 @@ export function trailing(prior, path) {
   return { median: xs.length ? round(median(xs)) : null, nights: xs.length }
 }
 
-/** Every REGRESSION line for tonight's row given the prior nights. Empty = none. */
+/** The speed rule on one median: over RULES.speedRatio x the baseline median, with enough baseline nights. */
+export function speedOver(med, prior) {
+  const t = trailing(prior, 'two.medMs')
+  return { over: typeof med === 'number' && t.nights >= RULES.speedMinNights && t.median > 0 && med > RULES.speedRatio * t.median, med, base: t.median, nights: t.nights }
+}
+
+/** Every REGRESSION line for tonight's row given the baseline nights. Empty = none. A speed line needs the
+ * re-measure (row.twoRecheck, made when the first pass is over) to be over the limit too, when there is one:
+ * one noisy run is not a slowdown (the nightly speed check's rule). */
 export function regressions(row, prior) {
   const out = []
   for (const f of row.failures || []) out.push(`REGRESSION: ${f.step} did not complete: ${f.why}`)
-  const med = get(row, 'two.medMs')
-  const t = trailing(prior, 'two.medMs')
-  if (typeof med === 'number' && t.nights >= RULES.speedMinNights && t.median > 0 && med > RULES.speedRatio * t.median) {
-    out.push(`REGRESSION: both-on-screen median ${med} ms is ${(med / t.median).toFixed(2)}x the trailing ${t.nights}-night median ${t.median} ms (limit ${RULES.speedRatio}x)`)
+  const s = speedOver(get(row, 'two.medMs'), prior)
+  const re = get(row, 'twoRecheck.medMs')
+  if (s.over && (re == null || speedOver(re, prior).over)) {
+    out.push(`REGRESSION: both-on-screen median ${s.med} ms is ${(s.med / s.base).toFixed(2)}x the trailing ${s.nights}-night median ${s.base} ms (limit ${RULES.speedRatio}x)${re != null ? `; measured again: ${re} ms` : ''}`)
   }
   const kept = get(row, 'soak.retainedMBPer100')
   if (typeof kept === 'number' && kept > RULES.retainedMBPer100) {
@@ -155,6 +192,23 @@ export function regressions(row, prior) {
     out.push(`REGRESSION: ${errs} page error(s) (${get(row, 'pageErrors.rejections') || 0} unhandled rejection(s)) across the runs`)
   }
   return out
+}
+
+/** Post tonight's regressions? The first night of a run of regressed nights, then every REMIND_EVERY nights
+ * while it lasts (compare.mjs shouldPostRegression). `before` = every earlier night, oldest first. */
+export function shouldPost(before) {
+  let n = 0
+  for (let i = before.length - 1; i >= 0 && ((before[i].verdict || {}).regressions || []).length; i--) n++
+  return n % REMIND_EVERY === 0
+}
+
+/** The ops-channel post (the nightly speed check's alert path). */
+export function formatAlert(row, lines, where) {
+  return [
+    `**Nightly chart canary: ${lines.length} regression(s)** (${row.date}, site build \`${String((row.build || {}).commit || '?').slice(0, 12)}\`)`,
+    ...lines.map((l) => `- ${l.replace(/^REGRESSION: /, '')}`),
+    `Production, headless Chrome, the bench member. Results: \`${where}\`.`,
+  ].join('\n').slice(0, 1900)
 }
 
 const fmt = (x, unit = ' ms') => (x == null ? 'n/a' : `${x}${unit}`)
@@ -172,17 +226,20 @@ export function formatLatest(row, prior) {
   lines.push('')
   lines.push(...(reg.length ? reg : ['No regression.']))
   const speedPrior = t('two.medMs').nights
-  if (speedPrior < RULES.speedMinNights) lines.push(`(The speed rule needs ${RULES.speedMinNights} prior nights; ${speedPrior} so far.)`)
+  if (speedPrior < RULES.speedMinNights) lines.push(`(The speed rule needs ${RULES.speedMinNights} baseline nights; ${speedPrior} so far.)`)
+  if (row.twoRecheck && !reg.some((l) => l.includes('both-on-screen'))) lines.push(`(Both on screen was over the limit on the first pass, ${(row.two || {}).medMs} ms; measured again: ${row.twoRecheck.medMs} ms, within it.)`)
   lines.push('')
   const b = row.build || {}
   lines.push(`- Build: \`${(b.commit || 'unknown').slice(0, 12)}\`${b.buildId ? ` (${b.buildId})` : ''}${b.changedDuringRun ? ` **changed during the run** (also served: ${(b.otherCommits || []).map((c) => `\`${String(c).slice(0, 12)}\``).join(', ')})` : ''}; pod up ${b.uptimeS != null ? Math.round(b.uptimeS / 60) + ' min' : 'n/a'} at the start`)
   lines.push(`- Run: ${row.startedAt} to ${row.endedAt} (${Math.round((row.runtimeS || 0) / 60 * 10) / 10} min), ${row.trigger || 'manual'}, production, headless Chrome, the bench member`)
   lines.push('')
-  lines.push('| measure | tonight | trailing median |')
+  lines.push('| measure | tonight | baseline median |')
   lines.push('|---|---|---|')
   const two = row.two || {}
   lines.push(`| Two charts ${two.tf || 'D'} + ${two.tf2 || '60'}, ${two.flips ?? 'n/a'} switches: BOTH on screen, median | ${fmt(two.medMs)} | ${tline('two.medMs')} |`)
   lines.push(`| ... p90 | ${fmt(two.p90Ms)} | ${tline('two.p90Ms')} |`)
+  lines.push(`| ... first candles of the new symbol (either chart), median / p90 | ${fmt((two.first || {}).medMs)} / ${fmt((two.first || {}).p90Ms)} | ${tpair('two.first.medMs', 'two.first.p90Ms')} |`)
+  lines.push(`| ... each chart, ${two.tf || 'D'} / ${two.tf2 || '60'}: median | ${fmt((two.chart1 || {}).medMs)} / ${fmt((two.chart2 || {}).medMs)} | ${tpair('two.chart1.medMs', 'two.chart2.medMs')} |`)
   for (const tf of TYPED_TFS) {
     const s = (row.typed || {})[tf] || {}
     lines.push(`| Typed never-opened, ${tf}: first paint, median / p90 | ${fmt(s.medMs)} / ${fmt(s.p90Ms)} | ${tpair(`typed.${tf}.medMs`, `typed.${tf}.p90Ms`)} |`)
@@ -207,6 +264,6 @@ export function formatLatest(row, prior) {
   }
   if (row.notes && row.notes.length) for (const n of row.notes) lines.push(`- Note: ${n}`)
   lines.push('')
-  lines.push(`Rows: rows.jsonl (one per night). Raw runs: runs/${row.runId}/. Rules: both-on-screen median > ${RULES.speedRatio}x the trailing median (>= ${RULES.speedMinNights} prior nights), retained > ${RULES.retainedMBPer100} MB per 100 switches, page errors > 0, or any run not completing.`)
+  lines.push(`Rows: rows.jsonl (one per night). Raw runs: runs/${row.runId}/. Baseline: the last ${RULES.trailingNights} nights that did not alarm, since the nightly check's last --accept. Rules: both-on-screen median > ${RULES.speedRatio}x the baseline median (>= ${RULES.speedMinNights} nights, and again on a second measurement), retained > ${RULES.retainedMBPer100} MB per 100 switches, page errors > 0, or any run not completing.`)
   return lines.join('\n') + '\n'
 }

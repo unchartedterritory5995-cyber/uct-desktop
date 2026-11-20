@@ -23,7 +23,7 @@ const typedFlip = (sym: string, key: number, ms: number | null) => ({
   frames: ms == null ? [{ t: key + 4, n: key + 5, o: st('10.00') }] : [{ t: key + 4, n: key + 5, o: st('10.00') }, { t: key + ms - 1, n: key + ms, o: st('31.20', 3000) }],
 })
 const okRow = (date: string, medMs: number, o: Record<string, unknown> = {}) => ({
-  date, two: { medMs, p90Ms: medMs + 60 }, soak: { retainedMBPer100: 40 }, pageErrors: { count: 0, rejections: 0 }, failures: [], ...o,
+  date, startedAt: `${date}T05:40:00.000Z`, two: { medMs, p90Ms: medMs + 60 }, soak: { retainedMBPer100: 40 }, pageErrors: { count: 0, rejections: 0 }, failures: [], ...o,
 })
 const nights = (n: number, medMs: number) => Array.from({ length: n }, (_, i) => okRow(`2026-11-${String(10 + i).padStart(2, '0')}`, medMs))
 
@@ -31,6 +31,15 @@ describe('chart canary scoring', () => {
   it('both on screen is the LATER of the two charts, timed by when the frame ran', () => {
     const s = R.scoreTwo({ dwell: 800, tf: 'D', tf2: '60', flips: [twoFlip(1000, 120, 180), twoFlip(5000, 200, 90), twoFlip(9000, 100, 140)] })
     expect(s).toMatchObject({ flips: 3, painted: 3, missed: 0, medMs: 180, maxMs: 200, censored: false })
+  })
+
+  it('first candles is the EARLIER chart; each chart is scored on its own', () => {
+    const s = R.scoreTwo({ dwell: 800, tf: 'D', tf2: '60', flips: [twoFlip(1000, 120, 180), twoFlip(5000, 200, 90), twoFlip(9000, 100, 140), twoFlip(13000, 300, null)] })
+    // first candles: 120, 90, 100, 300 (chart 1 alone) -> median 110; chart 2 never painted the 4th switch
+    expect(s.first).toEqual({ medMs: 110, p90Ms: 300, missed: 0 })
+    expect(s.chart1).toEqual({ medMs: 160, p90Ms: 300, missed: 0 })
+    expect(s.chart2).toEqual({ medMs: 160, p90Ms: 800, missed: 1 })
+    expect(s.missed).toBe(1)
   })
 
   it('a switch that never paints counts AT the dwell, so it can only make the night read slower', () => {
@@ -84,6 +93,38 @@ describe('chart canary regression lines', () => {
     expect(R.regressions(okRow('2026-11-20', 150, { soak: { retainedMBPer100: 300 } }), [])).toEqual([])
     expect(R.regressions(okRow('2026-11-20', 150, { pageErrors: { count: 1, rejections: 1 } }), [])[0]).toMatch(/1 page error\(s\) \(1 unhandled rejection/)
     expect(R.regressions(okRow('2026-11-20', 150, { failures: [{ step: 'soak', why: 'timed out' }] }), [])[0]).toBe('REGRESSION: soak did not complete: timed out')
+  })
+
+  it('an over-the-limit median measured again within the limit is not a regression; over twice is', () => {
+    const prior = nights(7, 140)
+    expect(R.regressions(okRow('2026-11-20', 400, { twoRecheck: { medMs: 180 } }), prior)).toEqual([])
+    const out = R.regressions(okRow('2026-11-20', 400, { twoRecheck: { medMs: 390 } }), prior)
+    expect(out).toHaveLength(1)
+    expect(out[0]).toMatch(/both-on-screen median 400 ms .*; measured again: 390 ms$/)
+    expect(R.speedOver(400, prior)).toMatchObject({ over: true, base: 140, nights: 7 })
+    expect(R.formatLatest(okRow('2026-11-20', 400, { twoRecheck: { medMs: 180 } }), prior)).toContain('measured again: 180 ms, within it')
+  })
+
+  it('the baseline: nights after the last --accept only, and never a night whose speed alarmed', () => {
+    const rows = [...nights(6, 100), okRow('2026-11-16', 500, { verdict: { regressions: ['x'], speed: true } })]
+    expect(R.priorNights(rows, '2026-11-20').map((r: { date: string }) => r.date)).toEqual(['2026-11-10', '2026-11-11', '2026-11-12', '2026-11-13', '2026-11-14', '2026-11-15'])
+    const since = R.lastAccept([{ date: '2026-11-11', status: 'pass' }, { date: '2026-11-13', status: 'reset' }, { date: '2026-11-14', status: 'pass' }])
+    expect(since).toBe('2026-11-13T00:00:00.000Z')
+    expect(R.priorNights(rows, '2026-11-20', 7, since).map((r: { date: string }) => r.date)).toEqual(['2026-11-13', '2026-11-14', '2026-11-15'])
+    expect(R.lastAccept([{ date: '2026-11-13', status: 'reset', at: '2026-11-13T15:00:00.000Z' }])).toBe('2026-11-13T15:00:00.000Z')
+    expect(R.lastAccept([{ date: '2026-11-13', status: 'pass' }])).toBeNull()
+  })
+
+  it('posting: the first regressed night, then every seventh while it lasts (the nightly check rule)', () => {
+    const bad = (d: string) => okRow(d, 100, { verdict: { regressions: ['REGRESSION: x'] } })
+    expect(R.shouldPost(nights(3, 100))).toBe(true)
+    expect(R.shouldPost([...nights(3, 100), bad('2026-11-13')])).toBe(false)
+    const seven = Array.from({ length: 7 }, (_, i) => bad(`2026-11-${10 + i}`))
+    expect(R.shouldPost(seven)).toBe(true)
+    expect(R.shouldPost(seven.slice(1))).toBe(false)
+    const msg = R.formatAlert({ date: '2026-11-20', build: { commit: '4c2911bc9076ea0e' } }, ['REGRESSION: memory retained 2904 MB per 100 switches'], 'D:/uct-history/canary/latest.md')
+    expect(msg).toContain('**Nightly chart canary: 1 regression(s)** (2026-11-20, site build `4c2911bc9076`)')
+    expect(msg).toContain('\n- memory retained 2904 MB per 100 switches\n')
   })
 
   it('only earlier dates count, the newest row of a date wins, and at most seven', () => {
