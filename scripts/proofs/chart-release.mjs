@@ -46,20 +46,63 @@ function resolveSha(ref) {
   }
 }
 
-/** An app node_modules installed from the same lockfile as the commit (its package-lock.json beside it). */
+const CACHE = `${HIST}/node-modules-cache`
+
+/** Is this node_modules a COMPLETE install of that lockfile? Every package this machine needs is present at its
+ *  locked version (another OS's or CPU's optional builds left out). null = yes, else why not.
+ *  ⛔ a matching package-lock.json beside it proves nothing: the 2026-11-21 gate build found two worktrees whose
+ *  lockfile had been pulled (html2canvas added) without an `npm ci`, and vite could not resolve the import. */
+function notInstalled(nm, lock) {
+  const app = dirname(nm)
+  let bad = 0, first = null
+  for (const [k, v] of Object.entries(lock.packages || {})) {
+    if (!k.startsWith('node_modules/') || v.link || v.optional) continue
+    if ((v.os && !v.os.includes(process.platform)) || (v.cpu && !v.cpu.includes(process.arch))) continue
+    let ver = null
+    try { ver = JSON.parse(readFileSync(join(app, k, 'package.json'), 'utf8')).version } catch { /* missing */ }
+    if (ver !== v.version) { bad++; if (!first) first = `${k.replace(/^.*node_modules\//, '')} ${ver || 'missing'} (locked ${v.version})` }
+  }
+  return bad ? `${bad} package(s) not as locked, e.g. ${first}` : null
+}
+
+/** An app node_modules that is a complete install of the commit's lockfile: someone's worktree, or else our own
+ *  install under D:/uct-history/node-modules-cache/<lockfile hash> (npm ci, kept for the next build). */
 function nodeModulesFor(sha) {
-  const want = sha256(git('show', `${sha}:app/package-lock.json`))
+  const lockText = git('show', `${sha}:app/package-lock.json`)
+  const want = sha256(lockText)
+  const lock = JSON.parse(lockText)
   const given = arg('node-modules', '')
-  const roots = ['C:/Users/Patrick/uct-worktrees']
+  const roots = ['C:/Users/Patrick/uct-worktrees', CACHE]
   const cands = given ? [given] : [
+    `${CACHE}/${want.slice(0, 12)}/app/node_modules`,
     `${DASH}/app/node_modules`,
     ...roots.flatMap((r) => { try { return readdirSync(r).map((d) => `${r}/${d}/app/node_modules`) } catch { return [] } }),
   ]
   for (const nm of cands) {
-    const lock = join(dirname(nm), 'package-lock.json')
-    if (existsSync(join(nm, 'vite')) && existsSync(lock) && sha256(readFileSync(lock, 'utf8')) === want) return nm
+    const lf = join(dirname(nm), 'package-lock.json')
+    if (!existsSync(join(nm, 'vite')) || !existsSync(lf) || sha256(readFileSync(lf, 'utf8')) !== want) continue
+    const why = notInstalled(nm, lock)
+    if (!why) return nm
+    log(`not using ${nm}: its lockfile matches, but ${why}`)
   }
-  throw new Error(`no node_modules installed from ${sha.slice(0, 10)}'s app/package-lock.json (looked in ${cands.length} places; pass --node-modules=<dir> or npm ci one)`)
+  if (given) throw new Error(`${given} is not a complete install of ${sha.slice(0, 10)}'s app/package-lock.json`)
+  return installCache(sha, want, lockText, lock)
+}
+
+function installCache(sha, want, lockText, lock) {
+  const dir = `${CACHE}/${want.slice(0, 12)}/app`
+  const nm = join(dir, 'node_modules')
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(join(dir, 'package.json'), git('show', `${sha}:app/package.json`) + '\n')
+  writeFileSync(join(dir, 'package-lock.json'), lockText + '\n')
+  log(`no complete install of lockfile ${want.slice(0, 12)} anywhere: npm ci into ${dir} (kept for later builds)`)
+  const r = spawnSync('npm.cmd', ['ci', '--no-audit', '--no-fund'], { cwd: dir, encoding: 'utf8', shell: true, maxBuffer: 256 * 1024 * 1024 })
+  const logFile = `${CACHE}/${want.slice(0, 12)}/npm-ci.log`
+  writeFileSync(logFile, (r.stdout || '') + (r.stderr || ''))
+  if (r.status !== 0) throw new Error(`npm ci failed (exit ${r.status}): ${logFile}`)
+  const why = notInstalled(nm, lock)
+  if (why) throw new Error(`npm ci finished but ${why}: ${logFile}`)
+  return nm
 }
 
 /** Production's web-front VITE_ flags (the values are never printed). */
