@@ -11,6 +11,16 @@ Last updated 2026-11-12 ~19:50 CT by an agent session. Read this first after a r
 - **By hand:** `node scripts/nightly/chart-canary.mjs` queues for the heavy lock itself; `--board-busy=<marker>` waits for another agent's bench-board marker; `--rescore=<runId>` scores a recorded run again after a rules change.
 - **Flip proof additions:** `--tf2`, `--soak-every=N` / `--abort-heap-mb=N`, and `out.pageErrors` in every run.
 
+## pixels_both: THE metric every chart change reports (2026-11-21)
+
+- **Definition:** pixels_both is when the frame carrying the LAST linked chart's first paint of the new symbol reached the screen, in ms after the key, click or Enter. `scripts/proofs/paint-probe.js` is injected before the app loads. It wraps `requestAnimationFrame` (lightweight-charts 5.2 paints there) and the 2D draw calls. A callback that draws into a chart widget's canvas is a paint, tagged with the newest bar it drew. Its `present` is the next frame's time. The old BOTH (the frame that first *saw* the new series through the debug handle) was about 30 ms early. It is kept as `seen` for comparison.
+- **Checked against Chromium:** `node scripts/proofs/pixels-trace-check.mjs <run.json>` reads a run made with `--trace=i,j` and compares each stamp with the trace's PipelineReporter presentation of the frame that carried the paint.
+- **Release rule:** no chart change ships unless it is equal or faster on pixels_both and the core grid shows no cell worse than the production baseline. Check with `node scripts/proofs/acceptance-matrix.mjs --compare=<baseline results.json>`, which writes one verdict line: PASS / REGRESSION / INCONCLUSIVE. The noise rule is in `acceptance-matrix-lib.mjs` NOISE.
+- **Post-paint budget:** at most 1 more paint per chart, and no main-thread busy period over 8 ms, in the 1 s after.
+- **Cadence:** `--cadence=` gives 150 / 300 ms taps and held keys (`--autorepeat=1 --cadence=33`).
+- **Machine load:** every run logs it and flags UNDER LOAD.
+- **Patched library:** a run stops if the page's lightweight-charts lacks the chartLibraryPatch.mjs edits. Any library bench must also use the patched build.
+
 ## Chart acceptance matrix (2026-11-20)
 
 - **The owner's bar:** every list, stock, timeframe and combination: linked charts show the new symbol in the SAME frame (SYNC_SKEW 0), within 40 ms, in one paint, with no follow-up heavy re-render, no memory growth and no page error.
