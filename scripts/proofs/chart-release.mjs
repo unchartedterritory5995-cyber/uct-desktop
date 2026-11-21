@@ -33,7 +33,9 @@ const arg = (k, d) => { const a = process.argv.find((x) => x.startsWith(`--${k}=
 const [cmd, target] = process.argv.slice(2).filter((x) => !x.startsWith('--'))
 const DASH = arg('dashboard', 'C:/Users/Patrick/uct-dashboard')
 const log = (m) => console.log(`${new Date().toISOString()} ${m}`)
-const sha256 = (buf) => createHash('sha256').update(String(buf).replace(/\r\n/g, '\n')).digest('hex')
+// ⛔ trailing whitespace is not content: `git()` trims what git prints, the file on disk ends in a newline, and the
+// first real gate build (2026-11-21) found "no node_modules" in 2,404 places because of that one newline
+const sha256 = (buf) => createHash('sha256').update(String(buf).replace(/\r\n/g, '\n').trimEnd()).digest('hex')
 const git = (...a) => execFileSync('git', ['-C', DASH, ...a], { encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }).trim()
 
 function resolveSha(ref) {
