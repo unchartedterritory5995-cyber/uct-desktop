@@ -5,6 +5,13 @@
 //   3. Any page over a limit is measured again; only a slowdown seen twice is posted to the ops channel.
 //   4. A night that cannot measure (window covered, low memory, app failed) is "blind": recorded, not
 //      passed. Three blind nights in a row post one notice, so a dead check never reads as healthy.
+//   5. Then the chart canary (chart-canary.mjs, 2026-11-20): production in headless Chrome, the bench
+//      member: two linked charts D + 60m switching down the S&P 500 (both on screen, first candles), typed
+//      never-opened tickers on D/60/5, a 100-switch heap-after-GC soak, page errors. It needs no monitor,
+//      so it runs on a blind night too. Its rows and latest.md are in D:/uct-history/canary/ (UCT_CANARY_DIR);
+//      its baseline follows the same rule (last 7 nights that did not alarm, since --accept), an
+//      over-the-limit speed is measured again, and a regression is posted here, first night then every 7th.
+//      UCT_NIGHTLY_CHARTS=0 skips it; UCT_CANARY_BOARD_BUSY=<file> names a bench-board marker to honour.
 // Everything lands in proof-output/nightly/ (history.jsonl, one JSON per night, log.txt).
 //   A slowdown is posted the first night and every 7th night while it lasts. If it is an intended
 //   change (a page that now does more on purpose), --accept makes the next night the new normal.
@@ -17,6 +24,8 @@ import {
   BLIND_ALERT_AFTER, baselineFrom, confirmedRegressions, findRegressions, formatBlindAlert,
   REMIND_EVERY, formatRegressionAlert, shouldPostRegression, trailingBlind,
 } from './compare.mjs'
+import { runCanary } from './chart-canary.mjs'
+import { formatAlert as formatChartAlert } from './chart-canary-rules.mjs'
 import { membersBuildExe } from './members-build.mjs'
 
 const DRY = process.argv.includes('--dry')
@@ -107,43 +116,67 @@ async function blind(reason) {
 }
 
 if (process.argv.includes('--accept')) {
-  appendFileSync(HISTORY, JSON.stringify({ date, status: 'reset', reason: 'accepted as the new normal' }) + '\n')
-  log('reset: the next night becomes the new baseline')
-  process.exit(0)
-}
-log(`start${DRY ? ' (dry)' : ''}, exe ${EXE}`)
-if (!existsSync(EXE)) { await blind(`no app build at ${EXE}`); process.exit(0) }
-if (freemem() < MIN_FREE_GB * 1024 ** 3) { await blind(`only ${(freemem() / 1024 ** 3).toFixed(1)} GB free`); process.exit(0) }
-
-const meta = { date, appVersion: appVersion(), build: await siteBuild() }
-const first = measure([], 'main')
-if (!first.ok) { await blind(first.reason); process.exit(0) }
-
-const baseline = baselineFrom(history)
-if (!baseline) {
-  record({ date, status: 'pass', meta, run: first.run, note: 'first run: becomes the baseline' })
-  log('first run recorded as the baseline')
+  // `at`: the chart canary's baseline starts after this moment too (chart-canary-rules.mjs lastAccept)
+  appendFileSync(HISTORY, JSON.stringify({ date, status: 'reset', reason: 'accepted as the new normal', at: new Date().toISOString() }) + '\n')
+  log('reset: the next night becomes the new baseline (pages and chart canary)')
   process.exit(0)
 }
 
-const over = findRegressions(baseline, first.run)
-if (!over.length) {
-  record({ date, status: 'pass', meta, run: first.run, baselineRuns: baseline.runs })
-  log(`pass (${first.run.routes.length} pages, baseline of ${baseline.runs} nights)`)
-  process.exit(0)
+/** 1-4: the five pages in the members' build. */
+async function pages() {
+  log(`start${DRY ? ' (dry)' : ''}, exe ${EXE}`)
+  if (!existsSync(EXE)) { await blind(`no app build at ${EXE}`); return }
+  if (freemem() < MIN_FREE_GB * 1024 ** 3) { await blind(`only ${(freemem() / 1024 ** 3).toFixed(1)} GB free`); return }
+
+  const meta = { date, appVersion: appVersion(), build: await siteBuild() }
+  const first = measure([], 'main')
+  if (!first.ok) { await blind(first.reason); return }
+
+  const baseline = baselineFrom(history)
+  if (!baseline) {
+    record({ date, status: 'pass', meta, run: first.run, note: 'first run: becomes the baseline' })
+    log('first run recorded as the baseline')
+    return
+  }
+
+  const over = findRegressions(baseline, first.run)
+  if (!over.length) {
+    record({ date, status: 'pass', meta, run: first.run, baselineRuns: baseline.runs })
+    log(`pass (${first.run.routes.length} pages, baseline of ${baseline.runs} nights)`)
+    return
+  }
+
+  log(`over the limit on first pass: ${over.map((r) => `${r.route} ${r.metric} ${r.cur}>${r.limit}`).join(', ')}; measuring again`)
+  const again = measure([...new Set(over.map((r) => r.route))], 'recheck')
+  if (!again.ok) { await blind(`recheck failed: ${again.reason}`); return }
+  const confirmed = confirmedRegressions(over, findRegressions(baseline, again.run))
+  if (!confirmed.length) {
+    record({ date, status: 'pass', meta, run: first.run, baselineRuns: baseline.runs, note: 'first pass over a limit, recheck normal', firstOver: over })
+    log('recheck normal: noise, not a slowdown')
+    return
+  }
+  const post_ = shouldPostRegression(history)
+  record({ date, status: 'regressed', meta, run: first.run, recheck: again.run, regressions: confirmed })
+  if (post_) await post(formatRegressionAlert(confirmed, meta))
+  else log(`still slower (${confirmed.length} rows); already posted, reminder every ${REMIND_EVERY} nights`)
 }
 
-log(`over the limit on first pass: ${over.map((r) => `${r.route} ${r.metric} ${r.cur}>${r.limit}`).join(', ')}; measuring again`)
-const again = measure([...new Set(over.map((r) => r.route))], 'recheck')
-if (!again.ok) { await blind(`recheck failed: ${again.reason}`); process.exit(0) }
-const confirmed = confirmedRegressions(over, findRegressions(baseline, again.run))
-if (!confirmed.length) {
-  record({ date, status: 'pass', meta, run: first.run, baselineRuns: baseline.runs, note: 'first pass over a limit, recheck normal', firstOver: over })
-  log('recheck normal: noise, not a slowdown')
-  process.exit(0)
+/** 5: the chart canary, inside this run's heavy lock (it records its own rows; a busy bench board is an
+ * incomplete night, never a wait while the machine's lock is held). */
+async function charts() {
+  if (process.env.UCT_NIGHTLY_CHARTS === '0') { log('chart canary: skipped (UCT_NIGHTLY_CHARTS=0)'); return }
+  log('chart canary: start (production, headless Chrome, the bench member)')
+  try {
+    const r = await runCanary({ trigger: DRY ? 'nightly-dry' : 'nightly', nightlyHistory: resolve(HISTORY), boardBusy: process.env.UCT_CANARY_BOARD_BUSY || '', onBusy: 'record' })
+    log(`chart canary: ${r.regressions.length ? r.regressions.join(' | ') : 'no regression'} (${r.latestPath})`)
+    if (!r.regressions.length) return
+    if (r.post) await post(formatChartAlert(r.row, r.regressions, r.latestPath))
+    else log(`chart canary: still regressed; already posted, reminder every ${REMIND_EVERY} nights`)
+  } catch (e) {
+    log(`chart canary failed to run: ${String((e && e.message) || e).slice(0, 200)}`)
+  }
 }
-const post_ = shouldPostRegression(history)
-record({ date, status: 'regressed', meta, run: first.run, recheck: again.run, regressions: confirmed })
-if (post_) await post(formatRegressionAlert(confirmed, meta))
-else log(`still slower (${confirmed.length} rows); already posted, reminder every ${REMIND_EVERY} nights`)
+
+await pages()
+await charts()
 process.exit(0)

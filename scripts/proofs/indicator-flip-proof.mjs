@@ -8,7 +8,8 @@
 // The board belongs to the bench account: its version is recorded, the test board applied through
 // /api/workspace/doc/apply, and the recorded version ALWAYS restored at the end.
 //
-// Usage: node scripts/proofs/indicator-flip-proof.mjs <out.json> [--flips=N] [--dwell=ms] [--tf=D] [--base=URL] [--set=name]
+// Usage: node scripts/proofs/indicator-flip-proof.mjs <out.json> [--flips=N] [--dwell=ms] [--tf=D] [--tf2=60] [--set=name] [--soak-every=N]
+// Every run records the page's uncaught exceptions and unhandled rejections (out.pageErrors).
 // Sends no OS keys: key presses are DevTools-dispatched into this run's own page.
 import { readFileSync, writeFileSync } from 'node:fs'
 import { startApp, sleep, BASE } from './launch.mjs'
@@ -18,6 +19,9 @@ const arg = (k, d) => { const a = process.argv.find((x) => x.startsWith(`--${k}=
 const FLIPS = Number(arg('flips', '12'))
 const DWELL = Number(arg('dwell', '2500'))
 const TF = arg('tf', 'D')
+// --tf2=<tf>: a SECOND chart on the same colour group at this timeframe, beside the first (the owner's
+// scan: daily + an intraday chart linked to one watchlist). Each frame then also records `o2`, chart 2's state.
+const TF2 = arg('tf2', '')
 const SET = arg('set', 'mixed')
 const PORT = Number(arg('port', '9441'))
 const PROFILE = arg('profile', '')
@@ -62,6 +66,12 @@ const HEADER = arg('header', '').split(',').filter(Boolean)
 // setting), so the symbol handoff prepared the extended-hours 60m series while the chart drew the
 // regular-hours one (found 2026-11-15: a wasted round trip before every 60m paint).
 const EXT = arg('ext', '')
+// --soak-every=N (arrow-key patterns): the page's JS heap after a full garbage collection (twice) before the
+// first flip and after every N flips, into out.soak; the flips are then kept slim (no res/dom/long). What a
+// switch RETAINS: on 2026-11-20 a base-app leak kept ~20 MB per switch until the page hung near 150.
+// --abort-heap-mb=N: a reading over N MB stops the run (the box's safety: a leaking page grows by GBs).
+const SOAK_EVERY = Number(arg('soak-every', '0'))
+const ABORT_HEAP_MB = Number(arg('abort-heap-mb', '0'))
 const D = { x: -1440, y: 0, w: 1440, h: 950 } // display 2 (portrait), top half
 
 const inst = (defId, inputs = {}) => ({ instanceId: `t:${defId}`, defId, inputs, hidden: false })
@@ -88,14 +98,16 @@ const SAMPLER = `(()=>{
     const h = (window.__uctChartDebug || {})[id]; if (!h) return null;
     const nb = h.newestBar(); const es = h.engineSeries() || [];
     const tc = nb ? nb.time + '|' + nb.close : null; F.fc = (F.fc || 0) + 1;
-    let cnt = F.lastCount;
-    if (!CHEAP || !nb || tc !== F.lastTC || F.fc % 30 === 0 || cnt == null) { cnt = nb ? nb.count : null; F.lastTC = tc; F.lastCount = cnt }
+    let cnt;
+    const st = (F.st = F.st || {})[id] || (F.st[id] = {}); cnt = st.count;
+    if (!CHEAP || !nb || tc !== st.tc || F.fc % 30 === 0 || cnt == null) { cnt = nb ? nb.count : null; st.tc = tc; st.count = cnt }
     const o = { c: nb ? cnt + '|' + nb.time + '|' + nb.close : 'none', s: {} };
     for (const s of es) { const k = s.instanceId + '::' + s.plotKey; let n = s.data.length, lf = lastFinite(s.data); for (const r of s.runs) { n += r.length; if (lf === 'none') lf = lastFinite(r) } o.s[k] = n + '|' + lf }
     return o };
   F.sigOf = sigOf;
   let prev = '';
-  const tick = (t) => { if (!F.on) return; const n = performance.now(); const o = sigOf(F.chart); const j = JSON.stringify(o); if (j !== prev) { F.frames.push({ t: t, n: n, o: o }); prev = j } requestAnimationFrame(tick) };
+  // a sample that throws (a chart handle mid-remount) is counted, never left to stop the loop or to read as a page error
+  const tick = (t) => { if (!F.on) return; try { const n = performance.now(); const o = sigOf(F.chart); const o2 = F.chart2 ? sigOf(F.chart2) : null; const j = JSON.stringify([o, o2]); if (j !== prev) { F.frames.push(o2 ? { t: t, n: n, o: o, o2: o2 } : { t: t, n: n, o: o }); prev = j } } catch (e) { F.sampleErrs = (F.sampleErrs || 0) + 1 } requestAnimationFrame(tick) };
   requestAnimationFrame(tick);
   try { F.po = new PerformanceObserver((l) => { for (const e of l.getEntries()) { if (e.name.indexOf('/api/') >= 0) F.res.push({ u: e.name.replace(location.origin, ''), s: Math.round(e.startTime), e: Math.round(e.responseEnd), ttfb: Math.round(e.responseStart - e.startTime), bytes: e.transferSize, st: (e.serverTiming || []).map((x) => x.name + (x.description ? '(' + x.description + ')' : '') + '=' + Math.round(x.duration)).join(',') }) } }); F.po.observe({ type: 'resource', buffered: false }) } catch (e) {}
   window.addEventListener('keydown', (e) => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || (F.enterKeys && e.key === 'Enter')) F.keys.push(performance.now()) }, true);
@@ -149,6 +161,36 @@ try {
   const { c, run, waitFor, charts } = app
   if (!HEADLESS) app.placeMainWindow(D.x, D.y, D.w, D.h)
   out.headless = HEADLESS
+  // EVERY uncaught page exception and unhandled promise rejection from sign-in on, into out.pageErrors. They
+  // are the page's own: this proof's evaluations hand their errors back to the caller, and its frame sampler
+  // catches its own. A rejection handled later (Runtime.exceptionRevoked) is taken back off the count.
+  out.pageErrors = { count: 0, rejections: 0, revoked: 0, first: [] }
+  const pageErrorIds = new Map()
+  c.on((m) => {
+    if (m.method === 'Runtime.exceptionRevoked') {
+      const kind = pageErrorIds.get(m.params.exceptionId)
+      if (!kind) return
+      pageErrorIds.delete(m.params.exceptionId)
+      out.pageErrors.count -= 1
+      out.pageErrors.revoked += 1
+      if (kind === 'rejection') out.pageErrors.rejections -= 1
+      return
+    }
+    if (m.method !== 'Runtime.exceptionThrown') return
+    const d = m.params.exceptionDetails || {}
+    const kind = /in promise/i.test(String(d.text || '')) ? 'rejection' : 'error'
+    pageErrorIds.set(d.exceptionId, kind)
+    out.pageErrors.count += 1
+    if (kind === 'rejection') out.pageErrors.rejections += 1
+    const frame = (d.stackTrace && d.stackTrace.callFrames && d.stackTrace.callFrames[0]) || {}
+    if (out.pageErrors.first.length < 20) {
+      out.pageErrors.first.push({
+        at: new Date().toISOString(), kind,
+        text: String((d.exception && d.exception.description) || d.text || '').slice(0, 400),
+        where: `${String(d.url || frame.url || '').replace(/^https?:\/\/[^/]+/, '').slice(0, 120)}:${(d.lineNumber ?? frame.lineNumber ?? -1) + 1}`,
+      })
+    }
+  })
   board = {
     head: () => run(`fetch('/api/workspace/doc?board=charts',{credentials:'include'}).then(r=>r.json()).then(j=>j.version)`),
     apply: (base, prefs) => run(`fetch('/api/workspace/doc/apply',{method:'POST',credentials:'include',headers:{'Content-Type':'application/json'},body:${JSON.stringify(JSON.stringify({ base_version: base, board: 'charts', prefs }))}}).then(async r=>({status:r.status,body:await r.json().catch(()=>null)}))`),
@@ -261,7 +303,7 @@ try {
       }, STUB)
     })
   }
-  out.build = await run(`fetch('/api/health').then(r=>r.json()).then(j=>({uptime:j.uptime_seconds,commit:j.commit||j.git_sha||null})).catch(()=>null)`)
+  out.build = await run(`fetch('/api/health').then(r=>r.json()).then(j=>({uptime:j.uptime_seconds,commit:j.commit||j.git_sha||null,buildId:j.build_id||null})).catch(()=>null)`)
   const serverDefs = await run(`fetch('/api/signature/definitions',{credentials:'include'}).then(r=>r.json()).then(j=>(j.definitions||[]).map(d=>d.id)).catch(()=>[])`)
   out.serverDefs = serverDefs
   let pick, watchKey
@@ -295,8 +337,9 @@ try {
   const CHART_W = arg('tfs', '') ? 19 : 16
   const layout = {
     widgets: [
-      { id: 'flip-chart', type: 'chart', color: 'A', x: 0, y: 0, w: CHART_W, h: 20, opts: { tf: TF, settings: { indicatorInstances: SETS[SET], ...(EXT !== '' ? { extendedHoursShading: EXT === '1' } : {}), ...(HEADER.length ? { header: { fields: HEADER } } : {}) } } },
-      { id: 'flip-wl', type: 'watchlist', color: 'A', x: CHART_W, y: 0, w: 24 - CHART_W, h: 20, opts: { watchKey, watchName: pick.name } },
+      { id: 'flip-chart', type: 'chart', color: 'A', x: 0, y: 0, w: TF2 ? 8 : CHART_W, h: 20, opts: { tf: TF, settings: { indicatorInstances: SETS[SET], ...(EXT !== '' ? { extendedHoursShading: EXT === '1' } : {}), ...(HEADER.length ? { header: { fields: HEADER } } : {}) } } },
+      ...(TF2 ? [{ id: 'flip-chart-2', type: 'chart', color: 'A', x: 8, y: 0, w: 8, h: 20, opts: { tf: TF2, settings: { indicatorInstances: SETS[SET], ...(EXT !== '' ? { extendedHoursShading: EXT === '1' } : {}) } } }] : []),
+      { id: 'flip-wl', type: 'watchlist', color: 'A', x: TF2 ? 16 : CHART_W, y: 0, w: TF2 ? 8 : 24 - CHART_W, h: 20, opts: { watchKey, watchName: pick.name } },
     ],
     cols: 24,
     version: 1,
@@ -408,7 +451,9 @@ try {
   console.log(`list ${pick.name}; rows ${out.page.rows}; series ${out.page.series.join(' ')}`)
 
   await run(SAMPLER)
-  await run(`(()=>{window.__flip.chart='flip-chart';return true})()`)
+  if (TF2) await waitFor(`!!(window.__uctChartDebug && window.__uctChartDebug['flip-chart-2'] && window.__uctChartDebug['flip-chart-2'].newestBar())`, 240000)
+  await run(`(()=>{window.__flip.chart='flip-chart';window.__flip.chart2=${TF2 ? "'flip-chart-2'" : 'null'};return true})()`)
+  out.tf2 = TF2 || null
   // select the first row the way a member would (a click on the row), then arrow down
   await run(`(()=>{const r=document.querySelector('[data-watch-sym]');r.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));r.click();return r.getAttribute('data-watch-sym')})()`, true)
   await sleep(DWELL + 1500)
@@ -438,34 +483,48 @@ try {
           const dbg = await run(`(()=>{const a=document.activeElement;const ins=[...document.querySelectorAll('input')].filter(x=>x.offsetParent).map(x=>({ph:x.placeholder||'',v:x.value,cls:String(x.className).slice(0,40)}));const opts=[...document.querySelectorAll('[role=option],[class*="result"],[class*="Result"]')].filter(x=>x.offsetParent).slice(0,4).map(x=>x.textContent.trim().slice(0,30));return {active:(a&&a.tagName)+'.'+String(a&&a.className).slice(0,50),val:a&&a.value,inputs:ins.slice(0,4),opts}})()`)
           console.log(`typed ${target}: ${JSON.stringify(dbg)}`)
         }
-        const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart)}})()`)
+        const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null}})()`)
         await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', text: '\r', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 })
         await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 })
         await sleep(DWELL)
-        const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),title:document.title}})()`)
+        const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,title:document.title}})()`)
         // --dump-times: every candle time the chart holds at the end of the dwell (to find a hole in its history)
         if (process.argv.includes('--dump-times')) {
           got.times = await run(`(()=>{const h=(window.__uctChartDebug||{})['flip-chart'];const t=h&&h.renderedTail?h.renderedTail(100000):null;return t?t.map(b=>b.time):null})()`)
         }
-        out.flips.push({ i, dir: 'typed', sym: target, before: before.sig, ...got })
+        out.flips.push({ i, dir: 'typed', sym: target, before: before.sig, before2: before.sig2, ...got })
       } else {
         // point at a row JUMP below the selection (wrapping), wait like a member, click it
         const pick2 = await run(`(()=>{const rows=[...document.querySelectorAll('[data-watch-sym]')];const sel=rows.findIndex(r=>/listRowSelected/.test(String(r.className))||r.getAttribute('aria-selected')==='true');const at=((sel<0?0:sel)+${JUMP})%rows.length;const r=rows[at];r.scrollIntoView({block:'center'});for(const t of ['pointerover','pointerenter','mouseover','mouseenter'])r.dispatchEvent(new (t.startsWith('pointer')?PointerEvent:MouseEvent)(t,{bubbles:t.endsWith('over')}));return r.getAttribute('data-watch-sym')})()`)
         target = pick2
         await sleep(HOVER)
-        const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart)}})()`)
+        const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null}})()`)
         await run(`(()=>{const r=document.querySelector('[data-watch-sym=${JSON.stringify(String(target))}]');window.__flip.keys.push(performance.now());r.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));r.click();return true})()`)
         await sleep(DWELL)
-        const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),title:document.title}})()`)
-        out.flips.push({ i, dir: 'jump', sym: target, before: before.sig, ...got })
+        const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,title:document.title}})()`)
+        out.flips.push({ i, dir: 'jump', sym: target, before: before.sig, before2: before.sig2, ...got })
       }
       save()
     }
   }
   const total = UPDOWN === 'typed' || UPDOWN === 'jump' ? 0 : (UPDOWN === 'downup' ? FLIPS * 2 : FLIPS)
+  // (--soak-every) the heap after a full collection: what the page RETAINS, not garbage it has yet to collect
+  const soakSample = async (after) => {
+    const t0 = Date.now()
+    await c.send('HeapProfiler.enable')
+    await c.send('HeapProfiler.collectGarbage'); await sleep(300); await c.send('HeapProfiler.collectGarbage')
+    const heap = await c.send('Runtime.getHeapUsage')
+    const mb = (v) => (typeof v === 'number' ? +(v / 1048576).toFixed(1) : null)
+    const rec = { after, usedMB: mb(heap.usedSize), totalMB: mb(heap.totalSize), backingMB: mb(heap.backingStorageSize), embedderMB: mb(heap.embedderHeapUsedSize), gcMs: Date.now() - t0, at: new Date().toISOString() }
+    ;(out.soak = out.soak || []).push(rec)
+    save()
+    console.log(`soak after ${after} flips: ${rec.usedMB} MB used (after a full GC), ${rec.backingMB} MB array buffers`)
+    if (ABORT_HEAP_MB && rec.usedMB != null && rec.usedMB > ABORT_HEAP_MB) throw new Error(`heap ${rec.usedMB} MB over the ${ABORT_HEAP_MB} MB abort line after ${after} flips`)
+  }
+  if (SOAK_EVERY && total) await soakSample(0)
   for (let i = 0; i < total; i++) {
     const K = (UPDOWN === 'downup' && i >= FLIPS) ? { key: 'ArrowUp', vk: 38 } : { key: 'ArrowDown', vk: 40 }
-    const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),now:performance.now()}})()`)
+    const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,now:performance.now()}})()`)
     const profiling = PROFILE_FLIPS.has(i)
     if (profiling) { await c.send('Profiler.enable'); await c.send('Profiler.setSamplingInterval', { interval: 100 }); await c.send('Profiler.start') }
     // --autorepeat=1: a HELD key, as the OS sends it: the first press, then auto-repeated key-downs
@@ -480,10 +539,17 @@ try {
       writeFileSync(OUT.replace(/\.json$/, '') + `.flip${i}.cpuprofile`, JSON.stringify(profile))
       await sleep(Math.max(0, DWELL - 700))
     } else await sleep(LAST_DWELL > 0 && i === total - 1 ? LAST_DWELL : DWELL)
-    const got = await run(`(()=>{const F=window.__flip;const sel=document.querySelector('[data-watch-sym][aria-selected="true"],[data-watch-sym][data-selected="true"]');return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),sym:sel?sel.getAttribute('data-watch-sym'):null,title:document.title}})()`)
-    out.flips.push({ i, dir: K.key, before: before.sig, ...got })
-    save()
+    const got = await run(`(()=>{const F=window.__flip;const sel=document.querySelector('[data-watch-sym][aria-selected="true"],[data-watch-sym][data-selected="true"]');return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,sym:sel?sel.getAttribute('data-watch-sym'):null,title:document.title}})()`)
+    if (SOAK_EVERY) {
+      // slim (a long soak's full res/dom/long would be rewritten on every save)
+      out.flips.push({ i, dir: K.key, before: before.sig, before2: before.sig2, key: got.key, frames: got.frames, end: got.end, end2: got.end2, sym: got.sym })
+      if ((i + 1) % SOAK_EVERY === 0 || i === total - 1) await soakSample(i + 1)
+    } else {
+      out.flips.push({ i, dir: K.key, before: before.sig, before2: before.sig2, ...got })
+      save()
+    }
   }
+  out.sampleErrs = await run(`(window.__flip && window.__flip.sampleErrs) || 0`)
   // --tfs=1W,1D,1W: after the flips, switch the chart's timeframe through these (the labels of the
   // buttons in its timeframe bar), one per dwell, recorded exactly like a flip into <out>.tf.json
   // so the same reports read it: do the indicators arrive with the candles on a timeframe switch?
@@ -513,14 +579,14 @@ try {
   if (TFS.length) {
     const tfOut = { ...out, flips: [], tfSwitches: TFS }
     for (let i = 0; i < TFS.length; i++) {
-      const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),now:performance.now()}})()`)
+      const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,now:performance.now()}})()`)
       const clicked = await run(`(()=>{const w=document.querySelector('[data-widget-id="flip-chart"]');const b=[...w.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(TFS[i])});if(!b)return null;const t=performance.now();b.click();return t})()`, true)
       if (clicked == null) {
         const have = await run(`(()=>{const w=document.querySelector('[data-widget-id="flip-chart"]');return w?[...w.querySelectorAll('button')].map(x=>x.textContent.trim()).filter(t=>t&&t.length<=4).join(' '):'no chart widget'})()`)
         throw new Error(`no timeframe button labelled ${TFS[i]} in the chart's bar (short button labels there: ${have})`)
       }
       await sleep(DWELL)
-      const got = await run(`(()=>{const F=window.__flip;return {frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),title:document.title}})()`)
+      const got = await run(`(()=>{const F=window.__flip;return {frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,title:document.title}})()`)
       tfOut.flips.push({ i, dir: `tf ${TFS[i]}`, before: before.sig, key: clicked, ...got })
       writeFileSync(OUT.replace(/\.json$/, '') + '.tf.json', JSON.stringify(tfOut, null, 1))
     }
