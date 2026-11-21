@@ -12,6 +12,12 @@
 //      its baseline follows the same rule (last 7 nights that did not alarm, since --accept), an
 //      over-the-limit speed is measured again, and a regression is posted here, first night then every 7th.
 //      UCT_NIGHTLY_CHARTS=0 skips it; UCT_CANARY_BOARD_BUSY=<file> names a bench-board marker to honour.
+//   6. Then the chart ACCEPTANCE MATRIX (scripts/proofs/acceptance-matrix.mjs, coordinator 2026-11-21), cells
+//      back to back inside this lock. Weeknights: the owner's CORE grid (24 cells, production's own device-store
+//      setting) into D:/uct-history/acceptance/core-<date>/, at most 90 min (UCT_MATRIX_CORE_MIN). Saturday and
+//      Sunday nights: the FULL 896-cell matrix in resumable slices (UCT_MATRIX_WEEKEND_MIN, default 360) into one
+//      pass folder (acceptance/full-pass.json names it) until every cell is scored, then a new pass starts.
+//      UCT_NIGHTLY_MATRIX=0 skips it; UCT_MATRIX_PROBE_DIST=<dir> measures a render-probe build instead.
 // Everything lands in proof-output/nightly/ (history.jsonl, one JSON per night, log.txt).
 //   A slowdown is posted the first night and every 7th night while it lasts. If it is an intended
 //   change (a page that now does more on purpose), --accept makes the next night the new normal.
@@ -26,6 +32,7 @@ import {
 } from './compare.mjs'
 import { runCanary } from './chart-canary.mjs'
 import { formatAlert as formatChartAlert } from './chart-canary-rules.mjs'
+import { matrixPlan } from './matrix-plan.mjs'
 import { membersBuildExe } from './members-build.mjs'
 
 const DRY = process.argv.includes('--dry')
@@ -177,6 +184,31 @@ async function charts() {
   }
 }
 
+/** 6: the acceptance matrix, inside this run's heavy lock (its cells run back to back). */
+function matrix() {
+  if (process.env.UCT_NIGHTLY_MATRIX === '0') { log('acceptance matrix: skipped (UCT_NIGHTLY_MATRIX=0)'); return }
+  const ROOT = process.env.UCT_MATRIX_DIR || 'D:/uct-history/acceptance'
+  const pointer = join(ROOT, 'full-pass.json')
+  let pass = null
+  try { pass = JSON.parse(readFileSync(pointer, 'utf8')) } catch { /* none yet */ }
+  let status = null
+  try { status = pass && JSON.parse(readFileSync(join(pass.dir, 'status.json'), 'utf8')) } catch { /* not started */ }
+  const plan = matrixPlan(new Date(), ROOT, pass, status, process.env)
+  if (plan.newPass) { mkdirSync(ROOT, { recursive: true }); writeFileSync(pointer, JSON.stringify(plan.newPass, null, 1)) }
+  const { out, grid } = plan
+  const budget = String(plan.budgetMin)
+  const args = ['scripts/proofs/acceptance-matrix.mjs', `--grid=${grid}`, `--out=${out}`, `--budget-min=${budget}`,
+    ...(process.env.UCT_CANARY_BOARD_BUSY ? [`--board-busy=${process.env.UCT_CANARY_BOARD_BUSY}`] : []),
+    ...(process.env.UCT_MATRIX_PROBE_DIST ? [`--render-probe-dist=${process.env.UCT_MATRIX_PROBE_DIST}`] : [])]
+  log(`acceptance matrix: ${grid} grid into ${out} (budget ${budget} min)`)
+  const r = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: (Number(budget) + 40) * 60000 })
+  appendFileSync(join(DIR, 'log.txt'), (r.stdout || '').split('\n').filter((l) => / (PASS|FAIL|ERROR|SKIP)|budget|cells to measure/.test(l)).join('\n') + '\n')
+  let st = null
+  try { st = JSON.parse(readFileSync(join(out, 'status.json'), 'utf8')) } catch { /* the run wrote nothing */ }
+  log(`acceptance matrix: exit ${r.status ?? r.signal}; ${st ? `${st.scored}/${st.cells} cells scored (${Object.entries(st.verdicts).map(([k, v]) => `${k} ${v}`).join(', ')}), ${st.todo} to go` : 'no status written'}; ${join(out, 'grid.md')}`)
+}
+
 await pages()
 await charts()
+matrix()
 process.exit(0)
