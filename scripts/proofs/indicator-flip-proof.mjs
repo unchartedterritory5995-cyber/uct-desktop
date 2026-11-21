@@ -18,7 +18,8 @@ import { cpus, freemem } from 'node:os'
 
 // THIS PC IS SHARED (coordinator 2026-11-21): every run logs the machine's CPU and free RAM each second, and how
 // much of the CPU was NOT this run (system busy time minus this run's browser tree and this process). A run is
-// UNDER LOAD when other processes averaged more than 1 core, or free RAM fell under 6 GB.
+// UNDER LOAD when other processes averaged more than 4 cores (this 24-core PC idles at ~2 with the owner's apps
+// open, measured 2026-11-21; a heavy job beside a run reads 13), or free RAM fell under 6 GB.
 function startMachineLog(chromePid) {
   const sys = () => cpus().reduce((a, c) => { const t = c.times; a.busy += t.user + t.nice + t.sys + t.irq; a.all += t.user + t.nice + t.sys + t.irq + t.idle; return a }, { busy: 0, all: 0 })
   const tree = () => {
@@ -43,7 +44,7 @@ function startMachineLog(chromePid) {
       const othersCores = wall > 0 ? Math.round(((sysCoreS - mineS) / wall) * 100) / 100 : null
       const freeMinMB = free.length ? Math.min(...free) : Math.round(freemem() / 1048576)
       const why = []
-      if (othersCores != null && othersCores > 1) why.push(`other processes averaged ${othersCores} cores`)
+      if (othersCores != null && othersCores > 4) why.push(`other processes averaged ${othersCores} cores`)
       if (freeMinMB < 6144) why.push(`free RAM fell to ${freeMinMB} MB`)
       return { cores: n, wallS: Math.round(wall), cpuMedPct: q(0.5), cpuP90Pct: q(0.9), freeMinMB, runCpuS: Math.round(mineS * 10) / 10, systemBusyCoreS: Math.round(sysCoreS * 10) / 10, othersCores, underLoad: why.length > 0, why, samples: samples.slice(0, 900) }
     },
@@ -182,7 +183,7 @@ const SAMPLER = `(()=>{
   const newest = (id) => { try { const nb = window.__uctChartDebug[id].newestBar(); return nb ? { time: nb.time, close: nb.close } : { time: null, close: null } } catch (e) { return { time: null, close: null } } };
   F.arm0 = () => { F.gen++; F.busy = []; F.evt = []; F.busyFrom = null; F.busyEnd = null; F.pp0 = PP ? PP.paints.length : 0; const need = {}; for (const id of idsOf()) need[id] = newest(id); const gen = F.gen; F.arm = { gen, need, found: {}, presented: {}, done: false, key: () => (F.gen === gen && F.keys.length ? F.keys[0] : Infinity) }; if (PP) PP.armed = F.arm };
   F.take = () => { const finals = {}; for (const id of idsOf()) finals[id] = newest(id); if (PP && PP.armed === F.arm) PP.armed = null; return { paints: PP ? PP.paints.slice(F.pp0) : null, evt: F.evt.slice(), busy: F.busy.slice(), busyFrom: F.busyFrom, busyEnd: F.busyEnd, finals } };
-  if (PP) PP.onPresent = (p) => { const A = F.arm; if (!A || A.gen !== F.gen || A.done || !p.first || A.found[p.w] !== p) return; A.presented[p.w] = p.present; if (Object.keys(A.presented).length === Object.keys(A.need).length) { A.done = true; F.startBusy(Math.max(...Object.values(A.presented)), A.gen) } };
+  if (PP) PP.onComplete = (p) => { const A = F.arm; if (!A || A.gen !== F.gen || A.done || !p.first || A.found[p.w] !== p) return; A.presented[p.w] = p.complete; if (Object.keys(A.presented).length === Object.keys(A.need).length) { A.done = true; F.startBusy(Math.max(...Object.values(A.presented)), A.gen) } };
   let prev = '';
   const STAMP_ONLY = ${STAMP_ONLY ? 'true' : 'false'};
   // a sample that throws (a chart handle mid-remount) is counted, never left to stop the loop or to read as a page error
@@ -564,7 +565,7 @@ try {
   if (STAMP_ONLY && NO_PAINT_PROBE) throw new Error('--stamp-only with --no-paint-probe measures nothing')
   // ⛔ (coordinator 2026-11-21) every measurement is of the PATCHED lightweight-charts (the app's build applies
   // app/scripts/chartLibraryPatch.mjs): the page's chart chunk must carry the patch's own marks
-  out.lwcPatch = await run(`(async()=>{const js=[...new Set(performance.getEntriesByType('resource').map(e=>e.name).filter(u=>/\\/assets\\/[^?]+\\.js/.test(u)))];const order=js.filter(u=>/vendor|chart/i.test(u)).concat(js.filter(u=>!/vendor|chart/i.test(u)));const UNPATCHED='function cs(t){let i;return t.forEach((t=>{void 0===i&&(i=t.Qr)})),_(i)}';for(const u of order.slice(0,600)){try{const t=await (await fetch(u)).text();if(t.indexOf('uctDayMemo')>=0)return {chunk:u.replace(location.origin,''),patched:t.indexOf('uct:markers-redraw-no-copy')>=0,marks:'uctDayMemo'+(t.indexOf('uct:markers-redraw-no-copy')>=0?'+markers':'')};if(t.indexOf(UNPATCHED)>=0)return {chunk:u.replace(location.origin,''),patched:false,marks:'the unpatched timeScalePointTime'}}catch(e){}}return {chunk:null,patched:null,scanned:js.length}})()`)
+  out.lwcPatch = await run(`(async()=>{const js=[...new Set(performance.getEntriesByType('resource').map(e=>e.name).filter(u=>/\\/assets\\/[^?]+\\.js/.test(u)))];const order=js.filter(u=>/vendor|chart/i.test(u)).concat(js.filter(u=>!/vendor|chart/i.test(u)));const LIB=(t)=>t.indexOf('subscribeVisibleLogicalRangeChange')>=0&&t.indexOf('getVisibleLogicalRange')>=0;for(const u of order.slice(0,600)){try{const t=await (await fetch(u)).text();if(LIB(t)){const a=t.indexOf('dataByIndex(-9007199254740991,1)')>=0,b=t.indexOf('size<5e4')>=0||t.indexOf('uctDayMemo')>=0;return {chunk:u.replace(location.origin,''),patched:a&&b,marks:(a?'markers-dataByIndex ':'')+(b?'day-memo':'')}}}catch(e){}}return {chunk:null,patched:null,scanned:js.length}})()`)
   console.log(`chart library: ${out.lwcPatch.patched ? 'PATCHED' : out.lwcPatch.patched === false ? 'NOT PATCHED' : 'not found'} (${out.lwcPatch.chunk})`)
   if (out.lwcPatch.patched === false) throw new Error(`the page runs an UNPATCHED lightweight-charts (${out.lwcPatch.chunk}): build it with the app's vite build`)
   await run(SAMPLER)

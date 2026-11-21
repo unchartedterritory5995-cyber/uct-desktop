@@ -52,10 +52,17 @@ describe('pixels_both, the presentation stamp', () => {
     expect(busy.reasons).toEqual(['2 main-thread busy period(s) > 8 ms in the 1 s after (max 31 ms)'])
   })
 
-  it("Event Timing cross-check: a stamp more than 8 ms before the input's own first presentation is flagged", () => {
+  it("Event Timing sanity check: the frame cannot be complete before the key's handlers finished", () => {
     const base = [paint('flip-chart', 1016.7, 1022, 20, 1033.4), paint('flip-chart-2', 1016.7, 1024, 21, 1033.4)]
-    expect(M.scoreSwitch(flip(base, { evt: [{ n: 'keydown', s: 999.5, d: 32 }] }), 2, 1500)).toMatchObject({ inputPresentMs: 31.5, stampEarly: false })
-    expect(M.scoreSwitch(flip(base, { evt: [{ n: 'keydown', s: 999.5, d: 48 }] }), 2, 1500).stampEarly).toBe(true)
+    expect(M.scoreSwitch(flip(base, { evt: [{ n: 'keydown', s: 999.5, pe: 1020, d: 32 }] }), 2, 1500)).toMatchObject({ inputPresentMs: 31.5, stampEarly: false })
+    expect(M.scoreSwitch(flip(base, { evt: [{ n: 'keydown', s: 999.5, pe: 1040, d: 48 }] }), 2, 1500).stampEarly).toBe(true)
+  })
+
+  it("the frame-complete stamp (`complete`) is used when present, and is never before the chart's own draws", () => {
+    const fc = (w: string, end: number, complete: number, close: number) => ({ w, t: 1016.7, end, time: '2026-11-20', close, first: true, complete, draws: 900 })
+    const s = M.scoreSwitch(flip([fc('flip-chart', 1022, 1031.2, 20), fc('flip-chart-2', 1049.4, 1052, 21)]), 2, 1500)
+    expect(s).toMatchObject({ pixelsMs: [31.2, 52], pixelsBothMs: 52, skewFrames: 0 })
+    expect(s.pixelsBothMs).toBeGreaterThanOrEqual(1049.4 - 1000)
   })
 
   it("the old stamp's lead is kept, and a run without the paint record is scored the old way and says so", () => {

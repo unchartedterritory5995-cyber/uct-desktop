@@ -1,23 +1,27 @@
-// THE PRESENTATION STAMP (2026-11-21, after the independent review): the owner's bar is "both linked charts' new
-// candles ON SCREEN within 40 ms of the key", and the flip proof's old BOTH was the animation frame that first
-// SAW the new series through the chart's debug handle, about 30 ms before lightweight-charts painted it.
+// THE FRAME-COMPLETE STAMP (2026-11-21, after the independent review and its validation): the owner's bar is "both
+// linked charts' new candles within 40 ms of the key", read as FRAME-COMPLETE: the frame containing both charts'
+// new pixels is finished by the renderer (its rAF callbacks, style, layout, paint and commit done). The ~33 ms the
+// browser, GPU and vsync then take to put that frame on glass is constant, outside app code, and reported apart
+// (pipeline_ms, from a trace: pixels-trace-check.mjs); the owner's historical 20-40 ms numbers were frame-based.
 //
 // Injected at document start (before any app script), so the library's own scheduling goes through it:
 // lightweight-charts 5.2 paints in `window.requestAnimationFrame` (ChartWidget's invalidate handler). Every rAF
 // callback is wrapped; a callback that DRAWS into a canvas inside a flip-proof chart widget is a PAINT of that
-// chart, and the frame AFTER it (the next rAF timestamp) is when the painted frame has been handed to the screen:
-// `present`. pixels(chart) = present of the chart's first paint of the new symbol.
+// chart. From inside that callback, AFTER its draw calls, a message is posted on a fresh MessageChannel: a task
+// that can only run once the current rendering update (all of this frame's callbacks, then style, layout, paint
+// and the commit) has finished. Its performance.now() is the paint's `complete`: never earlier than that chart's
+// own draws (validation 1, 2026-11-21: the next rAF's TIMESTAMP was, when a frame overran, earlier than the second
+// chart's draw). pixels(chart) = complete of its first paint of the new symbol; pixels_both = the last chart's.
 //
-// ⛔ THE PROBE READS NOTHING PER FRAME (2026-11-21: a per-frame read that clones series options cost ~3.8 ms a flip,
-// the instrument loading what it measures). Per paint it keeps the frame time, the callback's end, a count of draw
-// calls and `present`. Only while the proof has ARMED a switch (P.armed: each linked chart's newest bar at the key)
-// and a chart's first new paint is not yet found does a paint of THAT chart read its newest bar (one by-index
-// lookup, no series copy, no options); the first paint whose bar differs is marked `first`. Nothing else is read
-// until the post-paint window is over. With `marks = true` (the proof's --trace flips) each paint and present also
-// leaves a user-timing mark, so the stamp can be checked against the trace (pixels-trace-check.mjs).
+// ⛔ THE PROBE READS NOTHING PER FRAME (a per-frame read that cloned series options cost ~3.8 ms a flip). Per paint
+// it keeps the frame time, the callback's end, a count of draw calls and `complete`. Only while the proof has ARMED
+// a switch (P.armed: each linked chart's newest bar at the key) and a chart's first new paint is not yet found does
+// a paint of THAT chart read its newest bar (one by-index lookup, no series copy, no options); the first paint whose
+// bar differs is marked `first`. With `marks = true` (the proof's --trace flips) each paint and completion also
+// leaves a user-timing mark, so the stamp can be checked against the trace's commit of that frame.
 ;(() => {
   if (window.top !== window || window.__paintProbe) return
-  const P = (window.__paintProbe = { paints: [], max: 30000, cur: null, lastCv: null, lastW: null, marks: false, onPresent: null, armed: null })
+  const P = (window.__paintProbe = { paints: [], max: 30000, cur: null, lastCv: null, lastW: null, marks: false, onComplete: null, armed: null })
   const raf0 = window.requestAnimationFrame.bind(window)
   P.raf0 = raf0
   const wOf = new WeakMap()
@@ -60,8 +64,9 @@
         if (drew.size) {
           const end = performance.now()
           const A = P.armed
+          const ps = []
           for (const [w, draws] of drew) {
-            const p = { w, t, end, draws, present: null }
+            const p = { w, t, end, draws, complete: null }
             // the ONE read: an armed chart whose first paint of the new symbol has not been found yet
             if (A && A.need[w] && !A.found[w] && end >= A.key()) {
               try {
@@ -72,12 +77,22 @@
             }
             if (P.paints.length < P.max) P.paints.push(p)
             if (P.marks) { try { performance.mark('__lwcPaint:' + w) } catch (e) { /* */ } }
-            raf0((t2) => {
-              p.present = t2
-              if (P.marks) { try { performance.mark('__present:' + w) } catch (e) { /* */ } }
-              if (P.onPresent) { try { P.onPresent(p) } catch (e) { /* the proof's hook */ } }
-            })
+            ps.push(p)
           }
+          // the frame these draws belong to is complete when a task posted now gets to run
+          try {
+            const ch = new MessageChannel()
+            ch.port1.onmessage = () => {
+              const now = performance.now()
+              ch.port1.close()
+              for (const p of ps) {
+                p.complete = now
+                if (P.marks) { try { performance.mark('__frameDone:' + p.w) } catch (e) { /* */ } }
+                if (P.onComplete) { try { P.onComplete(p) } catch (e) { /* the proof's hook */ } }
+              }
+            }
+            ch.port2.postMessage(0)
+          } catch (e) { /* no MessageChannel: no stamp, scored as not on screen */ }
         }
       }
     })

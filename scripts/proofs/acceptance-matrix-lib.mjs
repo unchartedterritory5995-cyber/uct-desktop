@@ -237,7 +237,9 @@ function scorePixels(f, charts, dwell, renders, bar, s) {
   s.stamp = 'pixels'
   const paints = newPaintsOf(f, charts)
   s.paints = paints
-  s.pixelsMs = paints.map((p) => (p && p.present != null ? Math.round((p.present - key) * 10) / 10 : null))
+  // the frame-complete stamp (`complete`); records made before it carry the next rAF's timestamp (`present`)
+  const stampOf = (p) => (p ? (p.complete != null ? p.complete : p.present != null ? p.present : null) : null)
+  s.pixelsMs = paints.map((p) => (stampOf(p) != null ? Math.round((stampOf(p) - key) * 10) / 10 : null))
   const missing = s.pixelsMs.findIndex((x) => x == null)
   // the record of the rest of the switch, kept for the grid whether or not it reached the screen
   const lts = (f.long || []).filter((x) => x.s >= key && x.s <= key + Math.max(dwell, 1500))
@@ -267,10 +269,11 @@ function scorePixels(f, charts, dwell, renders, bar, s) {
   })
   const busy = (f.busy || []).filter((b) => b.d > bar.postPaintBusyMs)
   s.postBusy = f.busyFrom == null ? null : { count: busy.length, maxMs: busy.reduce((a, b) => Math.max(a, b.d), 0), windowMs: f.busyEnd != null ? Math.round(f.busyEnd - f.busyFrom) : null }
-  // Event Timing's own first presentation after the key: the charts cannot be on screen before it
+  // Event Timing (kept for reference): the key's own first PRESENTATION, and when its handlers finished. The
+  // frame with the new symbol cannot be complete before those handlers ended: a stamp that is, is wrong.
   const ev = (f.evt || []).find((e) => (e.n === 'keydown' || e.n === 'click' || e.n === 'pointerdown') && Math.abs(e.s - key) <= 5)
   s.inputPresentMs = ev ? Math.round((ev.s + ev.d - key) * 10) / 10 : null
-  s.stampEarly = s.inputPresentMs != null && s.pixelsBothMs < s.inputPresentMs - 8
+  s.stampEarly = !!ev && typeof ev.pe === 'number' && s.pixelsBothMs < ev.pe - key - 1
   s.rendersAfter = renders == null ? null : renders.filter((r) => r.t > key + s.pixelsBothMs && r.t <= key + Math.max(dwell, 1500)).length
   if (s.skewFrames > bar.skewFrames) s.reasons.push(`SYNC_SKEW ${s.skewFrames} frame(s)`)
   if (s.pixelsBothMs > bar.pixelsBothMs) s.reasons.push(`pixels_both ${s.pixelsBothMs} ms > ${bar.pixelsBothMs}`)
