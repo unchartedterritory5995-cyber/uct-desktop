@@ -104,7 +104,8 @@ describe('a cell', () => {
 describe('the matrix', () => {
   it('has every layout, list, motion and store the brief names, and a subset is one cell', () => {
     expect(Object.keys(M.LAYOUTS)).toEqual(['1m', '5m', '15m', '30m', '60m', 'D', 'W', 'M', 'D+1m', 'D+5m', 'D+15m', 'D+30m', 'D+60m', 'W+D', '60m+5m', 'D+60m+5m'])
-    expect(M.expandCells({})).toHaveLength(16 * 7 * 4 * 2)
+    expect(M.expandCells({ stores: ['off', 'on'] })).toHaveLength(16 * 7 * 4 * 2)
+    expect(Object.keys(M.STORES)).toEqual(['off', 'on', 'default'])
     const one = M.expandCells({ layouts: ['D+60m'], lists: ['sp500'], motions: ['next'], stores: ['off'] })
     expect(one).toEqual([{ store: 'off', layout: 'D+60m', list: 'sp500', motion: 'next', id: 'off__D+60m__sp500__next' }])
     expect(() => M.expandCells({ layouts: ['D+61m'] })).toThrow(/unknown: D\+61m/)

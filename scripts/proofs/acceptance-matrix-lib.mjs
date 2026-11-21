@@ -41,7 +41,22 @@ export const MOTIONS = {
   jump70: { name: '70-row jump x15', flips: 15, args: (o) => ['--pattern=jump', '--jump=70', '--flips=15', '--hover=250', `--dwell=${o.dwellJump}`] },
   typed: { name: 'typed never-opened x14', flips: 14, args: (o, typed) => ['--pattern=typed', `--typed=${typed.join(',')}`, '--type-gap=0', '--typed-pause=0', `--dwell=${o.dwellTyped}`] },
 }
-export const STORES = { off: ['--ls=uct.deviceStore=0'], on: ['--ls=uct.deviceStore=1', '--wait-device=1'] }
+// `default`: no override, so a fresh profile runs whatever production defaults to (the nightly core grid)
+export const STORES = { off: ['--ls=uct.deviceStore=0'], on: ['--ls=uct.deviceStore=1', '--wait-device=1'], default: [] }
+/** Named selections. CORE = the owner's core grid (coordinator 2026-11-21), the nightly default: 24 cells.
+ * FULL = every layout, list and motion, device store off and on: 896 cells, weekends in resumable slices. */
+export const GRIDS = {
+  core: { layouts: ['D+60m', 'D+30m'], lists: ['sp500', 'r2000', 'bullbear'], motions: ['next', 'jump12', 'jump70', 'typed'], stores: ['default'] },
+  full: { stores: ['off', 'on'] },
+}
+/** A grid's selection; an explicit filter replaces that dimension of the grid. */
+export function selection(grid, f = {}) {
+  const g = GRIDS[grid]
+  if (!g) throw new Error(`unknown grid ${grid} (known: ${Object.keys(GRIDS).join(', ')})`)
+  const out = {}
+  for (const k of ['layouts', 'lists', 'motions', 'stores']) out[k] = (f[k] && f[k].length) ? f[k] : (g[k] || [])
+  return out
+}
 export const DEFAULTS = { dwellNext: 1500, dwellJump: 4000, dwellTyped: 4000, warmup: 60000, set: 'base', port: 9454 }
 /** The cold-path tickers (the device-store agent's coldtyped.txt, 2026-11-20). --typed-pool replaces them. */
 export const TYPED_POOL = 'KSPI,ORLY,MUFG,IBEX,FERG,SPH,CVS,SNAP,CABO,IX,BHVN,JOUT,BWA,ZKH,BSAC,FRA,CZNC,LPX,HLIT,XPEV,GFS,CDNS,OR,RHI,NOAH,FIVN,BAP,APO'.split(',')
@@ -82,7 +97,7 @@ export function cellArgs(cell, opts = {}, typed = []) {
       '--headless=1', '--cheap-sampler=1', '--heap-ends=1', `--port=${o.port}`, `--set=${o.set}`, `--warmup=${o.warmup}`,
       `--tf=${tfs[0]}`, ...(tfs[1] ? [`--tf2=${tfs[1]}`] : []), ...(tfs[2] ? [`--tf3=${tfs[2]}`] : []),
       ...L.args(o), ...MOTIONS[cell.motion].args(o, typed),
-      `--ls=${lsPairs.join(',')}`, ...ls.filter((a) => !a.startsWith('--ls=')),
+      ...(lsPairs.length ? [`--ls=${lsPairs.join(',')}`] : []), ...ls.filter((a) => !a.startsWith('--ls=')),
       ...(o.renderProbe ? ['--console=rprobe'] : []), ...(o.dist ? [`--dist=${o.dist}`] : []),
     ],
   }
@@ -225,8 +240,9 @@ export function formatGrid(results, cells, meta = {}) {
   lines.push(`Bar: linked charts in the same frame (SYNC_SKEW ${BAR.skewFrames}), BOTH <= ${BAR.bothMs} ms, one paint, no long task or StockChart render after BOTH, heap growth <= ${BAR.memMBPerSwitch} MB per switch, no page error.`)
   lines.push(`Cells: ${cells.length} in this selection; ${results.length} scored (${Object.entries(counts).map(([k, v]) => `${k} ${v}`).join(', ') || 'none'}). PASS* = every measured criterion met, StockChart renders not counted (run with --render-probe on a probe build).`)
   if (meta.builds && meta.builds.length) lines.push(`Builds measured: ${meta.builds.map((b) => '`' + String(b).slice(0, 12) + '`').join(', ')}`)
+  if (meta.dist) lines.push(`Frontend measured: the --dist build in \`${meta.dist}\`${meta.renderProbe ? ' (render probe on: StockChart renders counted)' : ''}, against production's API.`)
   for (const store of [...new Set(cells.map((c) => c.store))]) {
-    lines.push('', `## Device store ${store.toUpperCase()}`, '', `| layout | list | ${motions.map((m) => MOTIONS[m].name).join(' | ')} |`, `|---|---|${motions.map(() => '---').join('|')}|`)
+    lines.push('', `## Device store: ${store === 'default' ? "production's own setting" : store.toUpperCase()}`, '', `| layout | list | ${motions.map((m) => MOTIONS[m].name).join(' | ')} |`, `|---|---|${motions.map(() => '---').join('|')}|`)
     const rows = []
     for (const c of cells) if (c.store === store && !rows.some((r) => r.layout === c.layout && r.list === c.list)) rows.push({ layout: c.layout, list: c.list })
     for (const r of rows) {

@@ -7,11 +7,14 @@
 //   node scripts/proofs/acceptance-matrix.mjs [selection] [options]      measure what is not yet measured
 //   node scripts/proofs/acceptance-matrix.mjs --report [selection]       rewrite grid.md from what is recorded
 //   node scripts/proofs/acceptance-matrix.mjs --plan [selection]         list the cells and the time they take
-// selection (comma lists of ids, empty = all): --layouts=D+60m,W  --lists=sp500,r2000  --motions=next,typed
-//   --stores=off,on   (ids: acceptance-matrix-lib.mjs LAYOUTS / LISTS / MOTIONS / STORES)
+// selection: --grid=core (DEFAULT: the owner's core grid, 24 cells: D+60m and D+30m x S&P 500, Russell 2000,
+//   Bull & Bear ETFs x every motion, production's own device-store setting) | --grid=full (896 cells: every layout,
+//   list and motion, store off and on); then any of --layouts=D+60m,W --lists=sp500 --motions=next,typed
+//   --stores=off,on,default replaces that dimension (ids: acceptance-matrix-lib.mjs LAYOUTS / LISTS / MOTIONS / STORES)
 // options: --out=<dir> (default D:/uct-history/acceptance/<--name, default today's date>)  --redo (measure again)
 //   --budget-min=N (start no cell after N minutes; the next run resumes)  --dist=<dir> (a candidate build)
-//   --render-probe=1 (count StockChart renders: needs a render-probe --dist build)  --user-list=<name> (the bench
+//   --render-probe-dist=<dir> (measure a RENDER-PROBE build: its StockChart renders are counted; the same as
+//   --dist=<dir> --render-probe=1)  --user-list=<name> (the bench
 //   member's own list for the `user` row)  --screen-id=<n> (a saved screen for `screener`)  --typed-pool=<file>
 //   --board-busy=<marker file>  --dwell-next/--dwell-jump/--dwell-typed=ms  --warmup=ms  --set=base
 // RESUMABLE: each cell writes cells/<id>.json (the raw run) and cells/<id>.score.json; a cell with a score is not
@@ -41,11 +44,12 @@ const CELLS = join(OUT, 'cells')
 mkdirSync(CELLS, { recursive: true })
 const log = (m) => { const line = `${new Date().toISOString()} ${m}`; console.log(line); appendFileSync(join(OUT, 'log.txt'), line + '\n') }
 const list = (k) => arg(k, '').split(',').map((s) => s.trim()).filter(Boolean)
-const filters = { layouts: list('layouts'), lists: list('lists'), motions: list('motions'), stores: list('stores') }
+const GRID = arg('grid', 'core')
+const filters = M.selection(GRID, { layouts: list('layouts'), lists: list('lists'), motions: list('motions'), stores: list('stores') })
 const opts = {
   dwellNext: Number(arg('dwell-next', M.DEFAULTS.dwellNext)), dwellJump: Number(arg('dwell-jump', M.DEFAULTS.dwellJump)), dwellTyped: Number(arg('dwell-typed', M.DEFAULTS.dwellTyped)),
   warmup: Number(arg('warmup', M.DEFAULTS.warmup)), set: arg('set', M.DEFAULTS.set), port: Number(arg('port', M.DEFAULTS.port)),
-  dist: arg('dist', ''), renderProbe: arg('render-probe', '') === '1', userList: arg('user-list', ''), screenId: arg('screen-id', ''),
+  dist: arg('render-probe-dist', '') || arg('dist', ''), renderProbe: !!arg('render-probe-dist', '') || arg('render-probe', '') === '1', userList: arg('user-list', ''), screenId: arg('screen-id', ''),
 }
 const BOARD_BUSY = arg('board-busy', '')
 // --proof=<file>: a stand-in for the flip proof (the runner's own smoke test); the real one otherwise
@@ -118,7 +122,7 @@ function report() {
   const cells = M.expandCells(filters)
   const results = cells.map((c) => readJson(scorePath(c.id))).filter(Boolean)
   const builds = [...new Set(results.map((r) => r.build && r.build.commit).filter(Boolean))]
-  const lines = [M.formatGrid(results, cells, { name: OUT.split(/[\\/]/).pop(), builds })]
+  const lines = [M.formatGrid(results, cells, { name: OUT.split(/[\\/]/).pop(), builds, dist: opts.dist, renderProbe: opts.renderProbe })]
   const worst = M.worstSwitches(results, 10)
   if (worst.length) {
     lines.push('## The worst switches', '')
@@ -133,6 +137,10 @@ function report() {
   }
   writeFileSync(join(OUT, 'grid.md'), lines.join('\n'))
   writeFileSync(join(OUT, 'results.json'), JSON.stringify(results.map(({ switches, ...r }) => r), null, 1))
+  // status.json: what a scheduler reads (is this pass complete, and how did it go)
+  const verdicts = {}
+  for (const r of results) verdicts[r.verdict] = (verdicts[r.verdict] || 0) + 1
+  writeFileSync(join(OUT, 'status.json'), JSON.stringify({ grid: GRID, cells: cells.length, scored: results.length, todo: cells.length - results.length, verdicts, builds, updated: new Date().toISOString() }, null, 1))
   return join(OUT, 'grid.md')
 }
 
