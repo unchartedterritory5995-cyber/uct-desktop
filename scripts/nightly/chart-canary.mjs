@@ -24,6 +24,7 @@ import { freemem } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as R from './chart-canary-rules.mjs'
+import * as Board from '../proofs/bench-board.mjs'
 
 const SELF = fileURLToPath(import.meta.url)
 const REPO = resolve(dirname(SELF), '..', '..')
@@ -66,25 +67,13 @@ function record(dir, row, history, { replace = false } = {}) {
   return { regressions, post: regressions.length > 0 && R.shouldPost(R.nightsBefore(others, row.date)), latestPath: p.latest }
 }
 
-// ── the bench-board marker (--board-busy) ──
-// Other bench-board users keep a marker file (2026-11-20: proofs ran beside the heavy lock with
-// --force-concurrent, and two apply/restore pairs overwrite each other). The canary waits while it exists
-// (never while holding the heavy lock), creates its own inside the lock (O_EXCL: {label, runId, pid,
-// startedUtc}) and removes it once every run's board is back. A canary marker whose pid is dead is stale.
-const markerText = (f) => { try { return readFileSync(f, 'utf8').trim() } catch { return null } }
-const pidAlive = (pid) => { try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
-const ownMarker = (f) => { try { const m = JSON.parse(markerText(f) || ''); return m && m.label === 'chart-canary' ? m : null } catch { return null } }
-function boardIsBusy(f, log) {
-  if (!f || !existsSync(f)) return false
-  const m = ownMarker(f)
-  if (m && Number.isInteger(m.pid) && !pidAlive(m.pid)) {
-    try { rmSync(f) } catch { /* raced */ }
-    log(`cleared a stale canary board marker (${m.runId}, pid ${m.pid} dead)`)
-    return existsSync(f)
-  }
-  return true
-}
-function removeOwnMarker(f, runId) { const m = f && ownMarker(f); if (m && m.runId === runId) { try { rmSync(f) } catch { /* gone */ } } }
+// ── the bench-board marker (--board-busy): scripts/proofs/bench-board.mjs. The canary waits while another
+// user's marker exists (never while holding the heavy lock), takes its own inside the lock and gives it back
+// once every run's board is back. LABEL marks the canary's own (its stale ones are cleared).
+const LABEL = 'chart-canary'
+const boardIsBusy = (f, log) => Board.boardIsBusy(f, LABEL, log)
+const removeOwnMarker = (f, runId) => Board.releaseBoard(f, LABEL, runId)
+const markerText = Board.markerText
 
 async function health() {
   try {
@@ -155,20 +144,11 @@ export async function runCanary(opts = {}) {
     return { row, ...out }
   }
 
-  if (o.boardBusy) {
-    boardIsBusy(o.boardBusy, log) // clears a dead canary's marker
-    try {
-      const fd = openSync(o.boardBusy, 'wx')
-      writeFileSync(fd, JSON.stringify({ label: 'chart-canary', runId, pid: process.pid, startedUtc: started.toISOString(), what: 'flip-proof runs on the bench board (uct-desktop scripts/nightly/chart-canary.mjs)' }) + '\n')
-      closeSync(fd)
-      process.on('exit', () => removeOwnMarker(o.boardBusy, runId))
-    } catch (e) {
-      if (e.code !== 'EEXIST') throw e
-      const held = String(markerText(o.boardBusy)).slice(0, 160)
-      if (o.onBusy === 'handBack') { log(`canary ${runId}: the bench board is busy (${held}): handing the lock back`); return { busy: true } }
-      failures.push({ step: 'canary', why: `the bench board was busy (${o.boardBusy}: ${held})` })
-      return finish()
-    }
+  if (o.boardBusy && !Board.takeBoard(o.boardBusy, LABEL, runId, 'flip-proof runs on the bench board (uct-desktop scripts/nightly/chart-canary.mjs)')) {
+    const held = String(markerText(o.boardBusy)).slice(0, 160)
+    if (o.onBusy === 'handBack') { log(`canary ${runId}: the bench board is busy (${held}): handing the lock back`); return { busy: true } }
+    failures.push({ step: 'canary', why: `the bench board was busy (${o.boardBusy}: ${held})` })
+    return finish()
   }
 
   const RUN_DIR = join(o.dir, 'runs', runId)
