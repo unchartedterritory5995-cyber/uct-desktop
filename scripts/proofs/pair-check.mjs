@@ -14,11 +14,12 @@ const fmt = (x) => (x == null ? 'n/a' : x === Infinity ? 'not on screen' : `${Ma
 const S = {}
 for (const [arm, files] of Object.entries(arms)) {
   const px = [], repaints = []
-  let loaded = false, builds = new Set()
+  let loaded = false, builds = new Set(), vias = new Set()
   for (const f of files) {
     const run = JSON.parse(readFileSync(f, 'utf8'))
     const charts = [run.tf, run.tf2, run.tf3].filter(Boolean).length
     if (run.machine && run.machine.underLoad) loaded = true
+    if (run.paintProbe) vias.add(run.stampVia || 'MessageChannel')
     if (run.build && run.build.commit) builds.add(run.build.commit)
     if (run.dist && run.dist.dir) builds.add(run.dist.dir.split(/[\\/]/).pop())
     for (const fl of run.flips || []) {
@@ -27,13 +28,15 @@ for (const [arm, files] of Object.entries(arms)) {
       if (s.repaints) repaints.push(Math.max(...s.repaints))
     }
   }
-  S[arm] = { px, med: med(px), p90: pct(px, 0.9), repaintsMax: repaints.length ? Math.max(...repaints) : null, repaintsMed: repaints.length ? med(repaints) : null, loaded, builds: [...builds] }
+  S[arm] = { px, med: med(px), p90: pct(px, 0.9), repaintsMax: repaints.length ? Math.max(...repaints) : null, repaintsMed: repaints.length ? med(repaints) : null, loaded, builds: [...builds], vias: [...vias].sort() }
   console.log(`${arm}: ${px.length} switches | pixels_both median ${fmt(S[arm].med)}, p90 ${fmt(S[arm].p90)} | repaints per chart median ${S[arm].repaintsMed ?? 'n/a'} (max ${S[arm].repaintsMax ?? 'n/a'})${loaded ? ' | UNDER LOAD' : ''} | ${S[arm].builds.join(', ')}`)
 }
 if (S.A && S.B) {
   const d = S.B.med != null && S.A.med != null ? S.B.med - S.A.med : null
   const p = M.mannWhitneyGreater(S.B.px, S.A.px)
   const worse = d != null && d >= M.NOISE.frameMs && p != null && p < M.NOISE.p
-  const verdict = worse ? (S.A.loaded || S.B.loaded ? 'WORSE, UNCONFIRMED (under load)' : 'WORSE') : 'EQUAL OR FASTER'
+  // two stamps are two rulers (see acceptance-matrix-lib compareResults): no verdict across them
+  const mixed = new Set([...S.A.vias, ...S.B.vias]).size > 1
+  const verdict = mixed ? `NO VERDICT: the arms were stamped differently (A ${S.A.vias.join(' + ')}, B ${S.B.vias.join(' + ')})` : worse ? (S.A.loaded || S.B.loaded ? 'WORSE, UNCONFIRMED (under load)' : 'WORSE') : 'EQUAL OR FASTER'
   console.log(`B - A median ${fmt(d)}; Mann-Whitney p(B worse) ${p == null ? 'n/a' : p.toFixed(3)} -> ${verdict}`)
 }

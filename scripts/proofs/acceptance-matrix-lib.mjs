@@ -312,6 +312,8 @@ export function scoreCell(j, cell, bar = BAR) {
   const m = j.machine || null
   const summary = {
     stamp: px.length ? 'pixels' : 'seen',
+    // the task that made the stamp (runs before 2026-11-21's fix carry none: a fresh MessageChannel)
+    stampVia: px.length ? j.stampVia || 'MessageChannel' : null,
     switches: gated.length, passed: gated.filter((s) => s.pass).length,
     pixelsBothMs: { med: median(gated.map((s) => s.pixelsBothMs)), p90: pct(gated.map((s) => s.pixelsBothMs), 0.9), max: pct(gated.map((s) => s.pixelsBothMs), 1) },
     firstPixelsMs: { med: median(gated.map((s) => s.firstPixelsMs)) },
@@ -466,7 +468,16 @@ export function mannWhitneyGreater(a, b) {
 const medInf = (xs) => { const s = xs.map((x) => (x == null ? Infinity : x)).sort(cmp); if (!s.length) return null; const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2 }
 
 /** Each cell of `current` against the same cell of `baseline` (results.json rows), and the one-line verdict. */
+/** The stamp mechanisms a set of results was measured with ('MessageChannel' for runs older than the field). */
+export const stampVias = (rows) => [...new Set(rows.filter((r) => r.summary && r.summary.stamp === 'pixels').map((r) => r.summary.stampVia || 'MessageChannel'))].sort()
+
 export function compareResults(current, baseline, noise = NOISE) {
+  // ⛔ two stamps are two rulers: a MessageChannel stamp waits behind the page's queued work, a user-blocking one does
+  // not, so the same build reads slower on the first. Never put them side by side; re-measure the baseline instead.
+  const vc = stampVias(current), vb = stampVias(baseline)
+  if (vc.length && vb.length && (vc.length > 1 || vb.length > 1 || vc[0] !== vb[0])) {
+    return { verdict: 'INCONCLUSIVE', line: `INCONCLUSIVE: the stamps differ (this run: ${vc.join(' + ')}; baseline: ${vb.join(' + ')}): re-measure the baseline on this harness`, rows: [], stampMismatch: { current: vc, baseline: vb } }
+  }
   const B = new Map(baseline.map((r) => [r.id, r]))
   const C = new Map(current.map((r) => [r.id, r]))
   const rows = []
