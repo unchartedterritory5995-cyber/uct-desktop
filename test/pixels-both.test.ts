@@ -66,6 +66,23 @@ describe('pixels_both, the presentation stamp', () => {
     expect(old).toMatchObject({ stamp: 'seen', bothMs: 5 })
   })
 
+  it('the lean probe: its own `first` mark decides the paint; unread repaints count unless the bar read after the window moved on', () => {
+    // the lean record: only the first new paint carries a bar; the rest are frame, end, draws, present
+    const lean = (o: Record<string, unknown> = {}) => flip([
+      { w: 'flip-chart', t: 1000.1, end: 1003, draws: 40, present: 1016.7 }, // not read: before the new data
+      { w: 'flip-chart', t: 1016.7, end: 1022, draws: 2400, present: 1033.4, time: '2026-11-20', close: 20, first: true },
+      { w: 'flip-chart-2', t: 1016.7, end: 1024, draws: 1800, present: 1033.4, time: '2026-11-20', close: 21, first: true },
+      { w: 'flip-chart', t: 1100, end: 1105, draws: 2400, present: 1117 },
+      { w: 'flip-chart', t: 1300, end: 1305, draws: 2400, present: 1317 },
+    ], o)
+    const s = M.scoreSwitch(lean({ finals: { 'flip-chart': { time: '2026-11-20', close: 20 }, 'flip-chart-2': { time: '2026-11-20', close: 21 } } }), 2, 1500)
+    expect(s).toMatchObject({ pixelsBothMs: 33.4, repaints: [2, 0], pass: false })
+    expect(s.reasons).toEqual(['repaints after the first: chart 1 x2 (> 1)'])
+    // the bar read once after the window is newer: one of those paints was a live new bar
+    const live = M.scoreSwitch(lean({ finals: { 'flip-chart': { time: '2026-11-21', close: 20.4 }, 'flip-chart-2': { time: '2026-11-20', close: 21 } } }), 2, 1500)
+    expect(live).toMatchObject({ repaints: [1, 0], pass: true })
+  })
+
   it('a held key is held to the bar on its landing only; the symbols it passed are counted', () => {
     const cell = { store: 'default', layout: 'D+60m', list: 'sp500', motion: 'held', id: 'x' }
     const miss = flip([], { key: 1000 })

@@ -91,7 +91,13 @@ const CADENCE = Number(arg('cadence', '0'))
 // --light-sampler=1: the per-frame sample reads only each chart's newest bar and view, never its indicator series
 // (engineSeries copies every series each call): the instrument stays out of the frame it measures. Implies the
 // cheap bar count. The presentation stamp (paint-probe.js) needs neither.
-const LIGHT_SAMPLER = arg('light-sampler', '') === '1'
+const LIGHT_SAMPLER = arg('light-sampler', '') === '1' || arg('stamp-only', '') === '1'
+// --stamp-only=1 (the matrix's default): the frame sampler's per-frame loop does not run at all, so nothing is read
+// from the charts per frame (the old `seen` stamp is then unavailable); the switch is judged on the presentation
+// stamp, and each chart's state is read once before the key and once after the post-paint window.
+const STAMP_ONLY = arg('stamp-only', '') === '1'
+// --no-paint-probe=1: leave the presentation probe out (the probe-on vs probe-off check of its own cost)
+const NO_PAINT_PROBE = arg('no-paint-probe', '') === '1'
 // --trace=i,j (arrow-key patterns; ported from the device-store agent's copy, 2026-11-20): a Chromium trace of
 // those flips, <out>.flip<i>.trace.json, with `traceAlign` (a user-timing mark's page time) and the paint probe's
 // marks on, for pixels-trace-check.mjs.
@@ -173,13 +179,15 @@ const SAMPLER = `(()=>{
   // 1 s (or until the next key): any gap over 8 ms between its turns is the main thread busy that long.
   F.startBusy = (from, gen) => { try { const ch = new MessageChannel(); let last = performance.now(); const end = from + 1000; ch.port1.onmessage = () => { const now = performance.now(); if (now - last > 8 && F.busy.length < 500) F.busy.push({ s: Math.round(last * 10) / 10, d: Math.round((now - last) * 10) / 10 }); last = now; if (now < end && F.gen === gen) ch.port2.postMessage(0); else { ch.port1.close(); F.busyEnd = now } }; F.busyFrom = from; ch.port2.postMessage(0) } catch (e) {} };
   const idsOf = () => [F.chart, F.chart2, F.chart3].filter(Boolean);
-  F.arm0 = () => { F.gen++; F.busy = []; F.evt = []; F.busyFrom = null; F.busyEnd = null; F.pp0 = PP ? PP.paints.length : 0; const need = {}; for (const id of idsOf()) { try { const nb = window.__uctChartDebug[id].newestBar(); need[id] = nb ? { time: nb.time, close: nb.close } : { time: null, close: null } } catch (e) { need[id] = { time: null, close: null } } } F.arm = { gen: F.gen, need, got: {}, done: false } };
-  F.take = () => ({ paints: PP ? PP.paints.slice(F.pp0) : null, evt: F.evt.slice(), busy: F.busy.slice(), busyFrom: F.busyFrom, busyEnd: F.busyEnd });
-  if (PP) PP.onPresent = (p) => { const A = F.arm; if (!A || A.gen !== F.gen || A.done || !F.keys.length || p.end < F.keys[0]) return; const b = A.need[p.w]; if (!b || A.got[p.w]) return; if (p.close === b.close && p.time === b.time) return; A.got[p.w] = p; if (Object.keys(A.got).length === Object.keys(A.need).length) { A.done = true; F.startBusy(Math.max(...Object.values(A.got).map((x) => x.present)), A.gen) } };
+  const newest = (id) => { try { const nb = window.__uctChartDebug[id].newestBar(); return nb ? { time: nb.time, close: nb.close } : { time: null, close: null } } catch (e) { return { time: null, close: null } } };
+  F.arm0 = () => { F.gen++; F.busy = []; F.evt = []; F.busyFrom = null; F.busyEnd = null; F.pp0 = PP ? PP.paints.length : 0; const need = {}; for (const id of idsOf()) need[id] = newest(id); const gen = F.gen; F.arm = { gen, need, found: {}, presented: {}, done: false, key: () => (F.gen === gen && F.keys.length ? F.keys[0] : Infinity) }; if (PP) PP.armed = F.arm };
+  F.take = () => { const finals = {}; for (const id of idsOf()) finals[id] = newest(id); if (PP && PP.armed === F.arm) PP.armed = null; return { paints: PP ? PP.paints.slice(F.pp0) : null, evt: F.evt.slice(), busy: F.busy.slice(), busyFrom: F.busyFrom, busyEnd: F.busyEnd, finals } };
+  if (PP) PP.onPresent = (p) => { const A = F.arm; if (!A || A.gen !== F.gen || A.done || !p.first || A.found[p.w] !== p) return; A.presented[p.w] = p.present; if (Object.keys(A.presented).length === Object.keys(A.need).length) { A.done = true; F.startBusy(Math.max(...Object.values(A.presented)), A.gen) } };
   let prev = '';
+  const STAMP_ONLY = ${STAMP_ONLY ? 'true' : 'false'};
   // a sample that throws (a chart handle mid-remount) is counted, never left to stop the loop or to read as a page error
   const tick = (t) => { if (!F.on) return; try { const n = performance.now(); const o = sigOf(F.chart); const o2 = F.chart2 ? sigOf(F.chart2) : null; const o3 = F.chart3 ? sigOf(F.chart3) : null; const j = JSON.stringify([o, o2, o3]); if (j !== prev) { F.frames.push(o3 ? { t: t, n: n, o: o, o2: o2, o3: o3 } : o2 ? { t: t, n: n, o: o, o2: o2 } : { t: t, n: n, o: o }); prev = j } } catch (e) { F.sampleErrs = (F.sampleErrs || 0) + 1 } requestAnimationFrame(tick) };
-  requestAnimationFrame(tick);
+  if (!STAMP_ONLY) requestAnimationFrame(tick);
   try { F.po = new PerformanceObserver((l) => { for (const e of l.getEntries()) { if (e.name.indexOf('/api/') >= 0) F.res.push({ u: e.name.replace(location.origin, ''), s: Math.round(e.startTime), e: Math.round(e.responseEnd), ttfb: Math.round(e.responseStart - e.startTime), bytes: e.transferSize, st: (e.serverTiming || []).map((x) => x.name + (x.description ? '(' + x.description + ')' : '') + '=' + Math.round(x.duration)).join(',') }) } }); F.po.observe({ type: 'resource', buffered: false }) } catch (e) {}
   window.addEventListener('keydown', (e) => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || (F.enterKeys && e.key === 'Enter')) F.keys.push(performance.now()) }, true);
   // main-thread long tasks (>50 ms): what the page was busy with around a flip
@@ -475,7 +483,9 @@ try {
   // out.allRes after the flips (same clock as each flip's `key`).
   await c.send('Page.addScriptToEvaluateOnNewDocument', { source: `try{performance.setResourceTimingBufferSize(50000)}catch(e){}` })
   // THE PRESENTATION STAMP: every chart paint (lightweight-charts' rAF draw) and when its frame was presented
-  await c.send('Page.addScriptToEvaluateOnNewDocument', { source: readFileSync(new URL('./paint-probe.js', import.meta.url), 'utf8') })
+  if (!NO_PAINT_PROBE) await c.send('Page.addScriptToEvaluateOnNewDocument', { source: readFileSync(new URL('./paint-probe.js', import.meta.url), 'utf8') })
+  out.stampOnly = STAMP_ONLY
+  out.noPaintProbe = NO_PAINT_PROBE
   // --idbtrace: every IndexedDB transaction the page opens (database, mode, stores, when it was
   // created, when it finished) and every get/put request inside it (store, key, how long), into
   // out.idbTrace for idb-trace-report.mjs. Installed before the page loads; times are the page's
@@ -550,7 +560,8 @@ try {
   console.log(`list ${pick.name}; rows ${out.page.rows}; series ${out.page.series.join(' ')}`)
 
   out.paintProbe = await run(`!!window.__paintProbe`)
-  if (!out.paintProbe) throw new Error('the paint probe is not in the page: no presentation stamp')
+  if (!out.paintProbe && !NO_PAINT_PROBE) throw new Error('the paint probe is not in the page: no presentation stamp')
+  if (STAMP_ONLY && NO_PAINT_PROBE) throw new Error('--stamp-only with --no-paint-probe measures nothing')
   // ⛔ (coordinator 2026-11-21) every measurement is of the PATCHED lightweight-charts (the app's build applies
   // app/scripts/chartLibraryPatch.mjs): the page's chart chunk must carry the patch's own marks
   out.lwcPatch = await run(`(async()=>{const js=[...new Set(performance.getEntriesByType('resource').map(e=>e.name).filter(u=>/\\/assets\\/[^?]+\\.js/.test(u)))];const order=js.filter(u=>/vendor|chart/i.test(u)).concat(js.filter(u=>!/vendor|chart/i.test(u)));const UNPATCHED='function cs(t){let i;return t.forEach((t=>{void 0===i&&(i=t.Qr)})),_(i)}';for(const u of order.slice(0,600)){try{const t=await (await fetch(u)).text();if(t.indexOf('uctDayMemo')>=0)return {chunk:u.replace(location.origin,''),patched:t.indexOf('uct:markers-redraw-no-copy')>=0,marks:'uctDayMemo'+(t.indexOf('uct:markers-redraw-no-copy')>=0?'+markers':'')};if(t.indexOf(UNPATCHED)>=0)return {chunk:u.replace(location.origin,''),patched:false,marks:'the unpatched timeScalePointTime'}}catch(e){}}return {chunk:null,patched:null,scanned:js.length}})()`)

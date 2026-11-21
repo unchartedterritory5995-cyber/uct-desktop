@@ -119,7 +119,7 @@ export function cellArgs(cell, opts = {}, typed = []) {
   if (o.renderProbe) lsPairs.push('uct.renderprobe=1')
   return {
     args: [
-      '--headless=1', '--light-sampler=1', '--heap-ends=1', `--port=${o.port}`, `--set=${o.set}`, `--warmup=${o.warmup}`,
+      '--headless=1', '--stamp-only=1', '--heap-ends=1', `--port=${o.port}`, `--set=${o.set}`, `--warmup=${o.warmup}`,
       `--tf=${tfs[0]}`, ...(tfs[1] ? [`--tf2=${tfs[1]}`] : []), ...(tfs[2] ? [`--tf3=${tfs[2]}`] : []),
       ...L.args(o), ...MOTIONS[cell.motion].args(o, typed),
       ...(lsPairs.length ? [`--ls=${lsPairs.join(',')}`] : []), ...ls.filter((a) => !a.startsWith('--ls=')),
@@ -184,8 +184,12 @@ export function probeRenders(consoleLines) {
  * the key and drew a newest bar other than the one it held at the key. null for a chart that did not paint it. */
 export function newPaintsOf(f, charts) {
   return CHART_IDS.slice(0, charts).map((id, c) => {
+    // the probe marks it (`first`: the one paint it read while armed and found the new bar on)
+    const marked = (f.paints || []).find((p) => p.w === id && p.first)
+    if (marked) return marked
+    // records made before the lean probe: every paint carried its bar
     const b = String((f[BEFORE[c]] && f[BEFORE[c]].c) || '').split('|')
-    return (f.paints || []).find((p) => p.w === id && p.end >= f.key && !(String(p.time) === b[1] && String(p.close) === b[2])) || null
+    return (f.paints || []).find((p) => p.w === id && p.end >= f.key && p.time !== undefined && !(String(p.time) === b[1] && String(p.close) === b[2])) || null
   })
 }
 
@@ -253,7 +257,14 @@ function scorePixels(f, charts, dwell, renders, bar, s) {
   s.skewFrames = Math.round((Math.max(...ts) - Math.min(...ts)) / FRAME_MS)
   // POST-PAINT BUDGET: each chart's further paints in the 1 s after its first (a newer newest bar, a live new
   // bar, is not counted; a changed close on the same bar is: off hours it is a correction, not a tick)
-  s.repaints = paints.map((p) => (f.paints || []).filter((q) => q !== p && q.w === p.w && q.end > p.end && q.end <= p.end + 1000 && String(q.time) === String(p.time)).length)
+  // (the lean probe reads no bar on these paints: a paint is counted unless it is known to carry a newer bar; when
+  // the bar read once after the window is newer than the first paint's, one of them was that live new bar)
+  s.repaints = paints.map((p) => {
+    const later = (f.paints || []).filter((q) => q !== p && q.w === p.w && q.end > p.end && q.end <= p.end + 1000 && (q.time === undefined || String(q.time) === String(p.time)))
+    const fin = f.finals && f.finals[p.w]
+    const unread = later.filter((q) => q.time === undefined).length
+    return later.length - (unread && fin && fin.time != null && String(fin.time) !== String(p.time) ? 1 : 0)
+  })
   const busy = (f.busy || []).filter((b) => b.d > bar.postPaintBusyMs)
   s.postBusy = f.busyFrom == null ? null : { count: busy.length, maxMs: busy.reduce((a, b) => Math.max(a, b.d), 0), windowMs: f.busyEnd != null ? Math.round(f.busyEnd - f.busyFrom) : null }
   // Event Timing's own first presentation after the key: the charts cannot be on screen before it
