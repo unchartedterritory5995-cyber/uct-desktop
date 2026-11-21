@@ -22,6 +22,9 @@ const TF = arg('tf', 'D')
 // --tf2=<tf>: a SECOND chart on the same colour group at this timeframe, beside the first (the owner's
 // scan: daily + an intraday chart linked to one watchlist). Each frame then also records `o2`, chart 2's state.
 const TF2 = arg('tf2', '')
+// --tf3=<tf> (with --tf2): a THIRD chart on the same colour group (D + 60m + 5m). Each frame also records `o3`.
+const TF3 = arg('tf3', '')
+if (TF3 && !TF2) throw new Error('--tf3 needs --tf2')
 const SET = arg('set', 'mixed')
 const PORT = Number(arg('port', '9441'))
 const PROFILE = arg('profile', '')
@@ -71,6 +74,8 @@ const EXT = arg('ext', '')
 // switch RETAINS: on 2026-11-20 a base-app leak kept ~20 MB per switch until the page hung near 150.
 // --abort-heap-mb=N: a reading over N MB stops the run (the box's safety: a leaking page grows by GBs).
 const SOAK_EVERY = Number(arg('soak-every', '0'))
+// --heap-ends=1: the same heap-after-GC reading before the first flip and after the last, for every pattern
+const HEAP_ENDS = arg('heap-ends', '') === '1'
 const ABORT_HEAP_MB = Number(arg('abort-heap-mb', '0'))
 const D = { x: -1440, y: 0, w: 1440, h: 950 } // display 2 (portrait), top half
 
@@ -102,12 +107,16 @@ const SAMPLER = `(()=>{
     const st = (F.st = F.st || {})[id] || (F.st[id] = {}); cnt = st.count;
     if (!CHEAP || !nb || tc !== st.tc || F.fc % 30 === 0 || cnt == null) { cnt = nb ? nb.count : null; st.tc = tc; st.count = cnt }
     const o = { c: nb ? cnt + '|' + nb.time + '|' + nb.close : 'none', s: {} };
+    // (ported 2026-11-20 from the device-store agent's copy) the newest candle's distance from the right edge
+    // (m: visibleRange().to - newestIndex(), invariant to a left prepend) and the visible width (w): a change
+    // after the first paint is the picture moving (VISIBLE_RANGE_DRIFT / a zoom change), not a deeper history
+    try { const vr = h.visibleRange(); const ni = h.newestIndex(); if (vr && Number.isFinite(ni)) { o.m = Math.round((vr.to - ni) * 100) / 100; o.w = Math.round((vr.to - vr.from) * 10) / 10 } } catch (e) {}
     for (const s of es) { const k = s.instanceId + '::' + s.plotKey; let n = s.data.length, lf = lastFinite(s.data); for (const r of s.runs) { n += r.length; if (lf === 'none') lf = lastFinite(r) } o.s[k] = n + '|' + lf }
     return o };
   F.sigOf = sigOf;
   let prev = '';
   // a sample that throws (a chart handle mid-remount) is counted, never left to stop the loop or to read as a page error
-  const tick = (t) => { if (!F.on) return; try { const n = performance.now(); const o = sigOf(F.chart); const o2 = F.chart2 ? sigOf(F.chart2) : null; const j = JSON.stringify([o, o2]); if (j !== prev) { F.frames.push(o2 ? { t: t, n: n, o: o, o2: o2 } : { t: t, n: n, o: o }); prev = j } } catch (e) { F.sampleErrs = (F.sampleErrs || 0) + 1 } requestAnimationFrame(tick) };
+  const tick = (t) => { if (!F.on) return; try { const n = performance.now(); const o = sigOf(F.chart); const o2 = F.chart2 ? sigOf(F.chart2) : null; const o3 = F.chart3 ? sigOf(F.chart3) : null; const j = JSON.stringify([o, o2, o3]); if (j !== prev) { F.frames.push(o3 ? { t: t, n: n, o: o, o2: o2, o3: o3 } : o2 ? { t: t, n: n, o: o, o2: o2 } : { t: t, n: n, o: o }); prev = j } } catch (e) { F.sampleErrs = (F.sampleErrs || 0) + 1 } requestAnimationFrame(tick) };
   requestAnimationFrame(tick);
   try { F.po = new PerformanceObserver((l) => { for (const e of l.getEntries()) { if (e.name.indexOf('/api/') >= 0) F.res.push({ u: e.name.replace(location.origin, ''), s: Math.round(e.startTime), e: Math.round(e.responseEnd), ttfb: Math.round(e.responseStart - e.startTime), bytes: e.transferSize, st: (e.serverTiming || []).map((x) => x.name + (x.description ? '(' + x.description + ')' : '') + '=' + Math.round(x.duration)).join(',') }) } }); F.po.observe({ type: 'resource', buffered: false }) } catch (e) {}
   window.addEventListener('keydown', (e) => { if (e.key === 'ArrowDown' || e.key === 'ArrowUp' || (F.enterKeys && e.key === 'Enter')) F.keys.push(performance.now()) }, true);
@@ -325,10 +334,21 @@ try {
     const lists = Array.isArray(prebuilt) ? prebuilt : (prebuilt.watchlists || prebuilt.lists || prebuilt.items || [])
     out.prebuilt = lists.slice(0, 40).map((l) => ({ id: l.id, name: l.name, n: l.item_count ?? l.count ?? (l.items ? l.items.length : null) }))
     const want = arg('list', '')
-    pick = (want && lists.find((l) => String(l.name).toLowerCase().includes(want.toLowerCase())))
-      || lists.find((l) => { const n = l.item_count ?? l.count ?? 0; return n >= 30 && n <= 120 }) || lists[0]
-    if (!pick) throw new Error('no prebuilt list to scan')
-    watchKey = `community:${pick.id}`
+    if (want.startsWith('user:')) {
+      // --list=user:<name>: the bench member's OWN list of that name (refused when there is none)
+      const name = want.slice(5).toLowerCase()
+      const mine = await run(`fetch('/api/watchlists?include_items=0&include_prebuilt=0',{credentials:'include'}).then(r=>r.json())`)
+      const own = Array.isArray(mine) ? mine : (mine.watchlists || mine.lists || [])
+      out.ownLists = own.slice(0, 40).map((l) => ({ id: l.id, name: l.name, n: l.item_count ?? l.count ?? null }))
+      pick = own.find((l) => String(l.name).toLowerCase() === name) || own.find((l) => String(l.name).toLowerCase().includes(name))
+      if (!pick) throw new Error(`the bench member has no list named ${want.slice(5)} (it has: ${own.map((l) => l.name).join(', ') || 'none'})`)
+      watchKey = `user:${pick.id}`
+    } else {
+      pick = (want && lists.find((l) => String(l.name).toLowerCase().includes(want.toLowerCase())))
+        || lists.find((l) => { const n = l.item_count ?? l.count ?? 0; return n >= 30 && n <= 120 }) || lists[0]
+      if (!pick) throw new Error('no prebuilt list to scan')
+      watchKey = `community:${pick.id}`
+    }
   }
   out.list = { id: pick.id, name: pick.name }
 
@@ -337,9 +357,11 @@ try {
   const CHART_W = arg('tfs', '') ? 19 : 16
   const layout = {
     widgets: [
-      { id: 'flip-chart', type: 'chart', color: 'A', x: 0, y: 0, w: TF2 ? 8 : CHART_W, h: 20, opts: { tf: TF, settings: { indicatorInstances: SETS[SET], ...(EXT !== '' ? { extendedHoursShading: EXT === '1' } : {}), ...(HEADER.length ? { header: { fields: HEADER } } : {}) } } },
-      ...(TF2 ? [{ id: 'flip-chart-2', type: 'chart', color: 'A', x: 8, y: 0, w: 8, h: 20, opts: { tf: TF2, settings: { indicatorInstances: SETS[SET], ...(EXT !== '' ? { extendedHoursShading: EXT === '1' } : {}) } } }] : []),
-      { id: 'flip-wl', type: 'watchlist', color: 'A', x: TF2 ? 16 : CHART_W, y: 0, w: TF2 ? 8 : 24 - CHART_W, h: 20, opts: { watchKey, watchName: pick.name } },
+      { id: 'flip-chart', type: 'chart', color: 'A', x: 0, y: 0, w: TF3 ? 6 : TF2 ? 8 : CHART_W, h: 20, opts: { tf: TF, settings: { indicatorInstances: SETS[SET], ...(EXT !== '' ? { extendedHoursShading: EXT === '1' } : {}), ...(HEADER.length ? { header: { fields: HEADER } } : {}) } } },
+      ...(TF2 ? [{ id: 'flip-chart-2', type: 'chart', color: 'A', x: TF3 ? 6 : 8, y: 0, w: TF3 ? 6 : 8, h: 20, opts: { tf: TF2, settings: { indicatorInstances: SETS[SET], ...(EXT !== '' ? { extendedHoursShading: EXT === '1' } : {}) } } }] : []),
+      ...(TF3 ? [{ id: 'flip-chart-3', type: 'chart', color: 'A', x: 12, y: 0, w: 6, h: 20, opts: { tf: TF3, settings: { indicatorInstances: SETS[SET], ...(EXT !== '' ? { extendedHoursShading: EXT === '1' } : {}) } } }] : []),
+      // --watch-opts=<json>: the watchlist widget's opts given whole (e.g. a saved screen: {"listSub":{...}})
+      { id: 'flip-wl', type: 'watchlist', color: 'A', x: TF3 ? 18 : TF2 ? 16 : CHART_W, y: 0, w: TF3 ? 6 : TF2 ? 8 : 24 - CHART_W, h: 20, opts: arg('watch-opts', '') ? JSON.parse(arg('watch-opts', '')) : { watchKey, watchName: pick.name } },
     ],
     cols: 24,
     version: 1,
@@ -380,7 +402,7 @@ try {
   out.warmSwitch = await run(`(()=>{try{return localStorage.getItem('uct.indwarm.off')}catch(e){return 'unreadable'}})()`)
   console.log(`indicator pre-load: ${out.warmSwitch === '1' ? 'SWITCHED OFF in this profile (uct.indwarm.off=1)' : 'on'}`)
   // every per-browser switch this work reads, as this profile holds it for THIS run
-  out.switches = await run(`(()=>{const o={};for(const k of ['uct.indwarm.off','uct.rsdisk.off','uct.restgate.off','uct.plotwindow.off']){try{o[k]=localStorage.getItem(k)}catch(e){o[k]='unreadable'}}return o})()`)
+  out.switches = await run(`(()=>{const o={};for(const k of ['uct.indwarm.off','uct.rsdisk.off','uct.restgate.off','uct.plotwindow.off','uct.deviceStore','uct.neighborframes']){try{o[k]=localStorage.getItem(k)}catch(e){o[k]='unreadable'}}return o})()`)
   console.log(`switches: ${JSON.stringify(out.switches)}`)
   // ⛔ EVERY REQUEST FROM THE PAGE LOAD ON, not only those inside a flip (2026-11-15). Each flip's
   // `res` starts empty, so what the page asked for before the first key press (a list's up-front
@@ -445,6 +467,18 @@ try {
     if (!runsIt) throw new Error('the page is not running the candidate build: this run would measure the shipped one')
   }
   await sleep(WARMUP) // the list's own up-front warm (and, on a new profile, the bars pack ingest)
+  if (arg('wait-device', '') === '1') {
+    const OPFS_JS = `(async()=>{const o={ok:0,files:0};try{const root=await navigator.storage.getDirectory();let dir=null;try{dir=await root.getDirectoryHandle('uct-device-store')}catch(e){}if(dir){for await(const [name,h] of dir.entries()){if(h.kind!=='file')continue;o.files++;if(name.endsWith('.ok'))o.ok++}}}catch(e){o.err=String(e)}return o})()`
+    const t0 = Date.now()
+    for (;;) {
+      const st = await run(OPFS_JS)
+      if (st.ok >= 6) { out.deviceWait = { msAfterWarmup: Date.now() - t0, ok: st.ok, files: st.files }; break }
+      if (Date.now() - t0 > 480000) { out.deviceWait = { timeout: true, ok: st.ok, files: st.files, err: st.err || null }; break }
+      await sleep(3000)
+    }
+    console.log(`device seed: ${JSON.stringify(out.deviceWait)}`)
+    save()
+  }
   out.pack = await run(`(()=>{const o={};for(const k of ['barspack.version','barspack.seed','barspack.hotVersion','intradaypack.version','breadthpack.version']){try{o[k]=localStorage.getItem(k)}catch(e){o[k]='ERR'}}return o})()`)
   out.page = await run(`({hidden:document.hidden,w:innerWidth,h:innerHeight,x:screenX,y:screenY,rows:document.querySelectorAll('[data-watch-sym]').length,first:[...document.querySelectorAll('[data-watch-sym]')].slice(0,${FLIPS + 3}).map(e=>e.getAttribute('data-watch-sym')),series:(window.__uctChartDebug['flip-chart'].engineSeries()||[]).map(s=>s.instanceId+'::'+s.plotKey+'#'+s.data.length)})`)
   if (out.page.hidden) throw new Error('page is hidden: no frames would be drawn')
@@ -452,13 +486,30 @@ try {
 
   await run(SAMPLER)
   if (TF2) await waitFor(`!!(window.__uctChartDebug && window.__uctChartDebug['flip-chart-2'] && window.__uctChartDebug['flip-chart-2'].newestBar())`, 240000)
-  await run(`(()=>{window.__flip.chart='flip-chart';window.__flip.chart2=${TF2 ? "'flip-chart-2'" : 'null'};return true})()`)
+  if (TF3) await waitFor(`!!(window.__uctChartDebug && window.__uctChartDebug['flip-chart-3'] && window.__uctChartDebug['flip-chart-3'].newestBar())`, 240000)
+  await run(`(()=>{window.__flip.chart='flip-chart';window.__flip.chart2=${TF2 ? "'flip-chart-2'" : 'null'};window.__flip.chart3=${TF3 ? "'flip-chart-3'" : 'null'};return true})()`)
   out.tf2 = TF2 || null
+  out.tf3 = TF3 || null
   // select the first row the way a member would (a click on the row), then arrow down
   await run(`(()=>{const r=document.querySelector('[data-watch-sym]');r.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));r.click();return r.getAttribute('data-watch-sym')})()`, true)
   await sleep(DWELL + 1500)
 
+  const total = UPDOWN === 'typed' || UPDOWN === 'jump' ? 0 : (UPDOWN === 'downup' ? FLIPS * 2 : FLIPS)
+  // (--soak-every) the heap after a full collection: what the page RETAINS, not garbage it has yet to collect
+  const soakSample = async (after) => {
+    const t0 = Date.now()
+    await c.send('HeapProfiler.enable')
+    await c.send('HeapProfiler.collectGarbage'); await sleep(300); await c.send('HeapProfiler.collectGarbage')
+    const heap = await c.send('Runtime.getHeapUsage')
+    const mb = (v) => (typeof v === 'number' ? +(v / 1048576).toFixed(1) : null)
+    const rec = { after, usedMB: mb(heap.usedSize), totalMB: mb(heap.totalSize), backingMB: mb(heap.backingStorageSize), embedderMB: mb(heap.embedderHeapUsedSize), gcMs: Date.now() - t0, at: new Date().toISOString() }
+    ;(out.soak = out.soak || []).push(rec)
+    save()
+    console.log(`soak after ${after} flips: ${rec.usedMB} MB used (after a full GC), ${rec.backingMB} MB array buffers`)
+    if (ABORT_HEAP_MB && rec.usedMB != null && rec.usedMB > ABORT_HEAP_MB) throw new Error(`heap ${rec.usedMB} MB over the ${ABORT_HEAP_MB} MB abort line after ${after} flips`)
+  }
   if (UPDOWN === 'typed' || UPDOWN === 'jump') {
+    if (HEAP_ENDS) await soakSample(0)
     if (UPDOWN === 'typed' && !TYPED.length) throw new Error('--pattern=typed needs --typed=AAA,BBB,...')
     const n = UPDOWN === 'typed' ? TYPED.length : FLIPS
     const CHART = '[data-widget-id="flip-chart"]'
@@ -483,48 +534,37 @@ try {
           const dbg = await run(`(()=>{const a=document.activeElement;const ins=[...document.querySelectorAll('input')].filter(x=>x.offsetParent).map(x=>({ph:x.placeholder||'',v:x.value,cls:String(x.className).slice(0,40)}));const opts=[...document.querySelectorAll('[role=option],[class*="result"],[class*="Result"]')].filter(x=>x.offsetParent).slice(0,4).map(x=>x.textContent.trim().slice(0,30));return {active:(a&&a.tagName)+'.'+String(a&&a.className).slice(0,50),val:a&&a.value,inputs:ins.slice(0,4),opts}})()`)
           console.log(`typed ${target}: ${JSON.stringify(dbg)}`)
         }
-        const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null}})()`)
+        const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,sig3:F.chart3?F.sigOf(F.chart3):null}})()`)
         await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', text: '\r', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 })
         await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 })
         await sleep(DWELL)
-        const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,title:document.title}})()`)
+        const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,end3:F.chart3?F.sigOf(F.chart3):null,title:document.title}})()`)
         // --dump-times: every candle time the chart holds at the end of the dwell (to find a hole in its history)
         if (process.argv.includes('--dump-times')) {
           got.times = await run(`(()=>{const h=(window.__uctChartDebug||{})['flip-chart'];const t=h&&h.renderedTail?h.renderedTail(100000):null;return t?t.map(b=>b.time):null})()`)
         }
-        out.flips.push({ i, dir: 'typed', sym: target, before: before.sig, before2: before.sig2, ...got })
+        out.flips.push({ i, dir: 'typed', sym: target, before: before.sig, before2: before.sig2, before3: before.sig3, ...got })
       } else {
         // point at a row JUMP below the selection (wrapping), wait like a member, click it
-        const pick2 = await run(`(()=>{const rows=[...document.querySelectorAll('[data-watch-sym]')];const sel=rows.findIndex(r=>/listRowSelected/.test(String(r.className))||r.getAttribute('aria-selected')==='true');const at=((sel<0?0:sel)+${JUMP})%rows.length;const r=rows[at];r.scrollIntoView({block:'center'});for(const t of ['pointerover','pointerenter','mouseover','mouseenter'])r.dispatchEvent(new (t.startsWith('pointer')?PointerEvent:MouseEvent)(t,{bubbles:t.endsWith('over')}));return r.getAttribute('data-watch-sym')})()`)
+        // (ported 2026-11-20 from the device-store agent's copy, the owner's 70-row jumps) A VIRTUALIZED list renders
+        // only its window (+12 overscan), so a jump past it is SCROLLED to first, as a member scrolls before
+        // clicking: the target is found by the virtualizer's own `data-index`, scrolled into the window, pointed at.
+        const pick2 = JUMP > 12 ? await run(`(async()=>{const W=document.querySelector('[data-widget-id="flip-wl"]')||document;const sel=W.querySelector('[data-watch-sym][aria-selected="true"],[data-watch-sym][data-selected="true"],[data-watch-sym][class*="listRowSelected"]');const wrapOf=(el)=>el&&el.closest('[data-index]');const sw=wrapOf(sel)||W.querySelector('[data-index]');if(!sw)return null;const from=Number(sw.getAttribute('data-index'));const total=Number(W.querySelectorAll('[data-index]').length);const scr=(()=>{for(let p=sw.parentElement;p;p=p.parentElement){const cs=getComputedStyle(p);if((cs.overflowY==='auto'||cs.overflowY==='scroll')&&p.scrollHeight>p.clientHeight)return p}return null})();if(!scr)return null;const h=sw.getBoundingClientRect().height||30;const want=from+${JUMP};const frame=()=>new Promise((r)=>requestAnimationFrame(()=>r()));let tw=null;for(let i=0;i<40&&!tw;i++){tw=W.querySelector('[data-index="'+want+'"]');if(tw)break;const max=scr.scrollHeight-scr.clientHeight;if(scr.scrollTop>=max-1){break}scr.scrollTop=Math.min(max,scr.scrollTop+Math.max(h*20,scr.clientHeight*0.8));await frame();await frame()}if(!tw){scr.scrollTop=0;await frame();await frame();tw=W.querySelector('[data-index="'+(${JUMP}%Math.max(1,total))+'"]')||W.querySelector('[data-index]')}const r=tw.querySelector('[data-watch-sym]')||tw;r.scrollIntoView({block:'center'});await frame();for(const t of ['pointerover','pointerenter','mouseover','mouseenter'])r.dispatchEvent(new (t.startsWith('pointer')?PointerEvent:MouseEvent)(t,{bubbles:t.endsWith('over')}));return r.getAttribute('data-watch-sym')})()`) : await run(`(()=>{const rows=[...document.querySelectorAll('[data-watch-sym]')];const sel=rows.findIndex(r=>/listRowSelected/.test(String(r.className))||r.getAttribute('aria-selected')==='true');const at=((sel<0?0:sel)+${JUMP})%rows.length;const r=rows[at];r.scrollIntoView({block:'center'});for(const t of ['pointerover','pointerenter','mouseover','mouseenter'])r.dispatchEvent(new (t.startsWith('pointer')?PointerEvent:MouseEvent)(t,{bubbles:t.endsWith('over')}));return r.getAttribute('data-watch-sym')})()`)
         target = pick2
         await sleep(HOVER)
-        const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null}})()`)
+        const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,sig3:F.chart3?F.sigOf(F.chart3):null}})()`)
         await run(`(()=>{const r=document.querySelector('[data-watch-sym=${JSON.stringify(String(target))}]');window.__flip.keys.push(performance.now());r.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));r.click();return true})()`)
         await sleep(DWELL)
-        const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,title:document.title}})()`)
-        out.flips.push({ i, dir: 'jump', sym: target, before: before.sig, before2: before.sig2, ...got })
+        const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,end3:F.chart3?F.sigOf(F.chart3):null,title:document.title}})()`)
+        out.flips.push({ i, dir: 'jump', sym: target, before: before.sig, before2: before.sig2, before3: before.sig3, ...got })
       }
       save()
     }
   }
-  const total = UPDOWN === 'typed' || UPDOWN === 'jump' ? 0 : (UPDOWN === 'downup' ? FLIPS * 2 : FLIPS)
-  // (--soak-every) the heap after a full collection: what the page RETAINS, not garbage it has yet to collect
-  const soakSample = async (after) => {
-    const t0 = Date.now()
-    await c.send('HeapProfiler.enable')
-    await c.send('HeapProfiler.collectGarbage'); await sleep(300); await c.send('HeapProfiler.collectGarbage')
-    const heap = await c.send('Runtime.getHeapUsage')
-    const mb = (v) => (typeof v === 'number' ? +(v / 1048576).toFixed(1) : null)
-    const rec = { after, usedMB: mb(heap.usedSize), totalMB: mb(heap.totalSize), backingMB: mb(heap.backingStorageSize), embedderMB: mb(heap.embedderHeapUsedSize), gcMs: Date.now() - t0, at: new Date().toISOString() }
-    ;(out.soak = out.soak || []).push(rec)
-    save()
-    console.log(`soak after ${after} flips: ${rec.usedMB} MB used (after a full GC), ${rec.backingMB} MB array buffers`)
-    if (ABORT_HEAP_MB && rec.usedMB != null && rec.usedMB > ABORT_HEAP_MB) throw new Error(`heap ${rec.usedMB} MB over the ${ABORT_HEAP_MB} MB abort line after ${after} flips`)
-  }
-  if (SOAK_EVERY && total) await soakSample(0)
+  if ((SOAK_EVERY && total) || (HEAP_ENDS && total)) await soakSample(0)
   for (let i = 0; i < total; i++) {
     const K = (UPDOWN === 'downup' && i >= FLIPS) ? { key: 'ArrowUp', vk: 38 } : { key: 'ArrowDown', vk: 40 }
-    const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,now:performance.now()}})()`)
+    const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,sig3:F.chart3?F.sigOf(F.chart3):null,now:performance.now()}})()`)
     const profiling = PROFILE_FLIPS.has(i)
     if (profiling) { await c.send('Profiler.enable'); await c.send('Profiler.setSamplingInterval', { interval: 100 }); await c.send('Profiler.start') }
     // --autorepeat=1: a HELD key, as the OS sends it: the first press, then auto-repeated key-downs
@@ -539,16 +579,18 @@ try {
       writeFileSync(OUT.replace(/\.json$/, '') + `.flip${i}.cpuprofile`, JSON.stringify(profile))
       await sleep(Math.max(0, DWELL - 700))
     } else await sleep(LAST_DWELL > 0 && i === total - 1 ? LAST_DWELL : DWELL)
-    const got = await run(`(()=>{const F=window.__flip;const sel=document.querySelector('[data-watch-sym][aria-selected="true"],[data-watch-sym][data-selected="true"]');return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,sym:sel?sel.getAttribute('data-watch-sym'):null,title:document.title}})()`)
+    const got = await run(`(()=>{const F=window.__flip;const sel=document.querySelector('[data-watch-sym][aria-selected="true"],[data-watch-sym][data-selected="true"],[data-watch-sym][class*="listRowSelected"]');return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,end3:F.chart3?F.sigOf(F.chart3):null,sym:sel?sel.getAttribute('data-watch-sym'):null,title:document.title}})()`)
     if (SOAK_EVERY) {
       // slim (a long soak's full res/dom/long would be rewritten on every save)
-      out.flips.push({ i, dir: K.key, before: before.sig, before2: before.sig2, key: got.key, frames: got.frames, end: got.end, end2: got.end2, sym: got.sym })
+      out.flips.push({ i, dir: K.key, before: before.sig, before2: before.sig2, before3: before.sig3, key: got.key, frames: got.frames, end: got.end, end2: got.end2, end3: got.end3, sym: got.sym })
       if ((i + 1) % SOAK_EVERY === 0 || i === total - 1) await soakSample(i + 1)
     } else {
-      out.flips.push({ i, dir: K.key, before: before.sig, before2: before.sig2, ...got })
+      out.flips.push({ i, dir: K.key, before: before.sig, before2: before.sig2, before3: before.sig3, ...got })
       save()
     }
   }
+  // (--heap-ends) the closing reading: after the last flip of any pattern (a soak has just taken it)
+  if (HEAP_ENDS && !(SOAK_EVERY && total)) await soakSample(UPDOWN === 'typed' ? TYPED.length : UPDOWN === 'jump' ? FLIPS : total)
   out.sampleErrs = await run(`(window.__flip && window.__flip.sampleErrs) || 0`)
   // --tfs=1W,1D,1W: after the flips, switch the chart's timeframe through these (the labels of the
   // buttons in its timeframe bar), one per dwell, recorded exactly like a flip into <out>.tf.json
@@ -579,14 +621,14 @@ try {
   if (TFS.length) {
     const tfOut = { ...out, flips: [], tfSwitches: TFS }
     for (let i = 0; i < TFS.length; i++) {
-      const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,now:performance.now()}})()`)
+      const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,sig3:F.chart3?F.sigOf(F.chart3):null,now:performance.now()}})()`)
       const clicked = await run(`(()=>{const w=document.querySelector('[data-widget-id="flip-chart"]');const b=[...w.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(TFS[i])});if(!b)return null;const t=performance.now();b.click();return t})()`, true)
       if (clicked == null) {
         const have = await run(`(()=>{const w=document.querySelector('[data-widget-id="flip-chart"]');return w?[...w.querySelectorAll('button')].map(x=>x.textContent.trim()).filter(t=>t&&t.length<=4).join(' '):'no chart widget'})()`)
         throw new Error(`no timeframe button labelled ${TFS[i]} in the chart's bar (short button labels there: ${have})`)
       }
       await sleep(DWELL)
-      const got = await run(`(()=>{const F=window.__flip;return {frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,title:document.title}})()`)
+      const got = await run(`(()=>{const F=window.__flip;return {frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,end3:F.chart3?F.sigOf(F.chart3):null,title:document.title}})()`)
       tfOut.flips.push({ i, dir: `tf ${TFS[i]}`, before: before.sig, key: clicked, ...got })
       writeFileSync(OUT.replace(/\.json$/, '') + '.tf.json', JSON.stringify(tfOut, null, 1))
     }

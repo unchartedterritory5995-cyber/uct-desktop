@@ -4,7 +4,7 @@
 // Signs in from BENCH_EMAIL / BENCH_PASSWORD, never printed. Sends no OS keys or clicks; the only
 // OS call minimizes and restores the window this run started.
 import { execFileSync, spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -183,7 +183,14 @@ if ($script:bestArea -gt 0) { [void][M]::ShowWindow($script:best, 9); [void][M]:
     cleanup()
     await sleep(2500)
     if (keepProfile || options.profile) return
-    try { rmSync(profile, { recursive: true, force: true }) } catch { /* left in temp */ }
+    // (ported 2026-11-20 from the device-store agent's copy: C: was filling with ~0.8 GB profiles) a Chrome
+    // child can still hold files for a few seconds after the kill: retry, then SAY whether the profile is gone.
+    for (let i = 0; i < 10; i++) {
+      try { rmSync(profile, { recursive: true, force: true }) } catch { /* still held: retry */ }
+      if (!existsSync(profile)) break
+      await sleep(1500)
+    }
+    console.log(`profile ${existsSync(profile) ? 'LEFT IN TEMP' : 'removed'}: ${profile}`)
   }
   async function boot() {
     const pageTarget = await findPage()
