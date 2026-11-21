@@ -7,16 +7,21 @@
 //   node scripts/proofs/acceptance-matrix.mjs [selection] [options]      measure what is not yet measured
 //   node scripts/proofs/acceptance-matrix.mjs --report [selection]       rewrite grid.md from what is recorded
 //   node scripts/proofs/acceptance-matrix.mjs --plan [selection]         list the cells and the time they take
-// selection: --grid=core (DEFAULT: the owner's core grid, 24 cells: D+60m and D+30m x S&P 500, Russell 2000,
-//   Bull & Bear ETFs x every motion, production's own device-store setting) | --grid=full (896 cells: every layout,
-//   list and motion, store off and on); then any of --layouts=D+60m,W --lists=sp500 --motions=next,typed
-//   --stores=off,on,default replaces that dimension (ids: acceptance-matrix-lib.mjs LAYOUTS / LISTS / MOTIONS / STORES)
+// selection: --grid=core (DEFAULT: the owner's core grid, 24 cells: D+60m and D+30m x S&P 500, Russell 2000, Bull &
+//   Bear ETFs x next row, 12-row, 70-row and typed, production's own device-store setting) | cadence (18: the same
+//   x 300 / 150 ms taps and a held key) | pr (8: D+30m x S&P 500, Russell 2000 x the four motions) | full (1,568:
+//   every layout, list and motion, store off and on); a comma list is the union (--grid=core,cadence); then any of
+//   --layouts=D+60m,W --lists=sp500 --motions=next,typed --stores=off,on,default replaces that dimension of each
+//   (ids: acceptance-matrix-lib.mjs LAYOUTS / LISTS / MOTIONS / STORES)
 // options: --out=<dir> (default D:/uct-history/acceptance/<--name, default today's date>)  --redo (measure again)
 //   --budget-min=N (start no cell after N minutes; the next run resumes)  --dist=<dir> (a candidate build)
 //   --render-probe-dist=<dir> (measure a RENDER-PROBE build: its StockChart renders are counted; the same as
 //   --dist=<dir> --render-probe=1)  --user-list=<name> (the bench
 //   member's own list for the `user` row)  --screen-id=<n> (a saved screen for `screener`)  --typed-pool=<file>
 //   --board-busy=<marker file>  --dwell-next/--dwell-jump/--dwell-typed=ms  --warmup=ms  --set=base
+//   --compare=<baseline results.json, or its run folder>: every cell against the same cell of the baseline (the
+//   release rule: no cell worse beyond noise; acceptance-matrix-lib.mjs NOISE), into compare.md, with ONE verdict
+//   line (PASS / REGRESSION / INCONCLUSIVE) at the top of grid.md and in status.json
 // RESUMABLE: each cell writes cells/<id>.json (the raw run) and cells/<id>.score.json; a cell with a score is not
 // run again (unless --redo). EACH CELL is its own heavy_lock job (normal priority, never forced), so the machine's
 // other jobs interleave; inside an existing heavy-lock hold the cells run back to back instead. The bench board is
@@ -45,7 +50,8 @@ mkdirSync(CELLS, { recursive: true })
 const log = (m) => { const line = `${new Date().toISOString()} ${m}`; console.log(line); appendFileSync(join(OUT, 'log.txt'), line + '\n') }
 const list = (k) => arg(k, '').split(',').map((s) => s.trim()).filter(Boolean)
 const GRID = arg('grid', 'core')
-const filters = M.selection(GRID, { layouts: list('layouts'), lists: list('lists'), motions: list('motions'), stores: list('stores') })
+const filterArgs = { layouts: list('layouts'), lists: list('lists'), motions: list('motions'), stores: list('stores') }
+const selected = M.gridCells(GRID, filterArgs) // --grid=core,cadence: the union
 const opts = {
   dwellNext: Number(arg('dwell-next', M.DEFAULTS.dwellNext)), dwellJump: Number(arg('dwell-jump', M.DEFAULTS.dwellJump)), dwellTyped: Number(arg('dwell-typed', M.DEFAULTS.dwellTyped)),
   warmup: Number(arg('warmup', M.DEFAULTS.warmup)), set: arg('set', M.DEFAULTS.set), port: Number(arg('port', M.DEFAULTS.port)),
@@ -65,7 +71,7 @@ function planFor(cell) {
   return { typed, ...M.cellArgs(cell, opts, typed) }
 }
 // a rough cell time: boot + warm-up + each switch's dwell and its own overhead (+ the device store's seed wait)
-const estimateS = (cell) => { const m = M.MOTIONS[cell.motion]; const dw = { next: opts.dwellNext, jump12: opts.dwellJump, jump70: opts.dwellJump, typed: opts.dwellTyped }[cell.motion]; return 25 + opts.warmup / 1000 + (cell.store === 'on' ? 90 : 0) + m.flips * (dw / 1000 + (cell.motion === 'next' ? 0.3 : 0.9)) + 10 }
+const estimateS = (cell) => { const m = M.MOTIONS[cell.motion]; const per = { next: opts.dwellNext / 1000 + 0.3, jump12: opts.dwellJump / 1000 + 0.9, jump70: opts.dwellJump / 1000 + 0.9, typed: opts.dwellTyped / 1000 + 0.9, next300: 0.3, next150: 0.15, held: 0.033 }[cell.motion] ?? 2; return 25 + opts.warmup / 1000 + (cell.store === 'on' ? 90 : 0) + m.flips * per + (/^next\d|held/.test(cell.motion) ? 1.5 : 0) + 10 }
 
 function runProof(out, args, timeoutMin) {
   const fd = openSync(out.replace(/\.json$/, '.log'), 'a')
@@ -119,10 +125,21 @@ async function measureCell(cell) {
 
 /** grid.md and results.json from every recorded cell score (the worst switches with their timelines). */
 function report() {
-  const cells = M.expandCells(filters)
+  const cells = selected
   const results = cells.map((c) => readJson(scorePath(c.id))).filter(Boolean)
   const builds = [...new Set(results.map((r) => r.build && r.build.commit).filter(Boolean))]
   const lines = [M.formatGrid(results, cells, { name: OUT.split(/[\\/]/).pop(), builds, dist: opts.dist, renderProbe: opts.renderProbe })]
+  let compare = null
+  const basePath = arg('compare', '')
+  if (basePath) {
+    const file = existsSync(join(basePath, 'results.json')) ? join(basePath, 'results.json') : basePath
+    const baseline = readJson(file)
+    if (!Array.isArray(baseline)) throw new Error(`--compare: no results in ${file}`)
+    const wanted = new Set(cells.map((c) => c.id))
+    compare = M.compareResults(results, baseline.filter((r) => wanted.has(r.id)))
+    writeFileSync(join(OUT, 'compare.md'), M.formatCompare(compare, { current: OUT, baseline: file }))
+    lines.unshift(`**${compare.line}** (compare.md)`, '')
+  }
   const worst = M.worstSwitches(results, 10)
   if (worst.length) {
     lines.push('## The worst switches', '')
@@ -140,12 +157,13 @@ function report() {
   // status.json: what a scheduler reads (is this pass complete, and how did it go)
   const verdicts = {}
   for (const r of results) verdicts[r.verdict] = (verdicts[r.verdict] || 0) + 1
-  writeFileSync(join(OUT, 'status.json'), JSON.stringify({ grid: GRID, cells: cells.length, scored: results.length, todo: cells.length - results.length, verdicts, builds, updated: new Date().toISOString() }, null, 1))
+  writeFileSync(join(OUT, 'status.json'), JSON.stringify({ grid: GRID, cells: cells.length, scored: results.length, todo: cells.length - results.length, verdicts, builds, ...(compare ? { compare: { verdict: compare.verdict, line: compare.line } } : {}), updated: new Date().toISOString() }, null, 1))
+  if (compare) console.log(compare.line)
   return join(OUT, 'grid.md')
 }
 
 async function main() {
-  const cells = M.expandCells(filters)
+  const cells = selected
   if (has('report')) { console.log(readFileSync(report(), 'utf8')); return 0 }
   const todo = cells.filter((c) => has('redo') || !existsSync(scorePath(c.id)))
   const estMin = Math.round(todo.reduce((a, c) => a + estimateS(c), 0) / 60)

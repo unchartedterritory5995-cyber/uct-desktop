@@ -104,7 +104,7 @@ describe('a cell', () => {
 describe('the matrix', () => {
   it('has every layout, list, motion and store the brief names, and a subset is one cell', () => {
     expect(Object.keys(M.LAYOUTS)).toEqual(['1m', '5m', '15m', '30m', '60m', 'D', 'W', 'M', 'D+1m', 'D+5m', 'D+15m', 'D+30m', 'D+60m', 'W+D', '60m+5m', 'D+60m+5m'])
-    expect(M.expandCells({ stores: ['off', 'on'] })).toHaveLength(16 * 7 * 4 * 2)
+    expect(M.expandCells({ stores: ['off', 'on'] })).toHaveLength(16 * 7 * 7 * 2)
     expect(Object.keys(M.STORES)).toEqual(['off', 'on', 'default'])
     const one = M.expandCells({ layouts: ['D+60m'], lists: ['sp500'], motions: ['next'], stores: ['off'] })
     expect(one).toEqual([{ store: 'off', layout: 'D+60m', list: 'sp500', motion: 'next', id: 'off__D+60m__sp500__next' }])
@@ -136,7 +136,7 @@ describe('the matrix', () => {
     const good = M.scoreCell({ dwell: 1500, flips: [flip(1000, [30, 30])], soak: [{ after: 0, usedMB: 1 }, { after: 1, usedMB: 1 }] }, cells[0])
     const bad = M.scoreCell({ dwell: 4000, flips: [flip(1000, [30, 200]), flip(9000, [30, null]), flip(19000, [50, 50])] }, cells[1])
     const md = M.formatGrid([good, bad], cells)
-    expect(md).toContain('| D+60m | S&P 500 | **PASS*** 1/1 BOTH 30/30 ms | **FAIL** 0/3')
+    expect(md).toContain('| D+60m | S&P 500 | **PASS*** 1/1 BOTH(seen) 30/30 ms | **FAIL** 0/3')
     const w = M.worstSwitches([good, bad], 10)
     expect(w.map((s: { bothMs: number | null }) => s.bothMs)).toEqual([null, 200, 50])
     expect(M.timeline(flip(1000, [30, 30], [{ at: 400, chart: 0, state: st('20.00', { bars: 5000 }) }], { long: [{ s: 1100, d: 60 }] }), 2)).toEqual([

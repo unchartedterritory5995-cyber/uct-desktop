@@ -11,6 +11,20 @@ Last updated 2026-11-12 ~19:50 CT by an agent session. Read this first after a r
 - **By hand:** `node scripts/nightly/chart-canary.mjs` queues for the heavy lock itself; `--board-busy=<marker>` waits for another agent's bench-board marker; `--rescore=<runId>` scores a recorded run again after a rules change.
 - **Flip proof additions:** `--tf2`, `--soak-every=N` / `--abort-heap-mb=N`, and `out.pageErrors` in every run.
 
+## pixels_both: THE metric every chart change reports (2026-11-21)
+
+- **Definition:** pixels_both is FRAME-COMPLETE: the time, after the key, click or Enter, at which the frame containing the LAST linked chart's first paint of the new symbol is finished by the renderer (callbacks, style, layout, paint, commit). `scripts/proofs/paint-probe.js` is injected before the app loads. It wraps `requestAnimationFrame` (lightweight-charts 5.2 paints there) and the 2D draw calls; a callback that draws into a chart widget's canvas is a paint. A MessageChannel task posted from that callback, after the draws, runs once the frame is done: its time is the paint's `complete`. The browser/GPU/vsync time from there to glass (`pipeline_ms`, ~33 ms here) is measured from a trace and reported apart, never added. The old BOTH (the frame that first *saw* the new series) is kept as `seen`.
+- **Checked against Chromium:** `node scripts/proofs/pixels-trace-check.mjs <run.json>` reads a run made with `--trace=i,j` and compares each stamp with the renderer's Commit of the frame that carried the paint (VALIDATED = within one frame and never before the chart's own paint), and reports pipeline_ms.
+- **Release rule:** no chart change ships unless it is equal or faster on pixels_both and the core grid shows no cell worse than the production baseline. Check with `node scripts/proofs/acceptance-matrix.mjs --compare=<baseline results.json>`, which writes one verdict line: PASS / REGRESSION / INCONCLUSIVE. The noise rule is in `acceptance-matrix-lib.mjs` NOISE.
+- **Release workflow (coordinator 2026-11-21):**
+  1. Each chart PR's author runs their pixels_both pair plus `node scripts/proofs/chart-release.mjs pr <head-sha>`. That is the 8-cell owner subset (D+30m × S&P 500, Russell 2000 × next / 12-row / 70-row / typed) on that build, compared with the baseline.
+  2. After each merge window and BEFORE promotion, run `node scripts/proofs/chart-release.mjs gate <master-sha>`. It builds that SHA with production's web-front flags through the app's vite build, so the library is patched. It then runs the 24-cell core grid on it against production's API and prints PASS / REGRESSION / INCONCLUSIVE. A REGRESSION names its cells and blocks the promotion. The exit code is 0 / 3 / 4, and the verdict is also written to `acceptance\gate-<sha>\verdict.txt`.
+  3. Record the baseline with `chart-release.mjs baseline <run folder>`. It must be a production run on pixels_both (the nightly `core-<date>`). The baseline is kept as `acceptance\baseline-<date>-<build>.json`, and `acceptance\baseline.json` points at it.
+- **Post-paint budget:** at most 1 more paint per chart, and no main-thread busy period over 8 ms, in the 1 s after.
+- **Cadence:** `--cadence=` gives 150 / 300 ms taps and held keys (`--autorepeat=1 --cadence=33`).
+- **Machine load:** every run logs it and flags UNDER LOAD.
+- **Patched library:** a run stops if the page's lightweight-charts lacks the chartLibraryPatch.mjs edits. Any library bench must also use the patched build.
+
 ## Chart acceptance matrix (2026-11-20)
 
 - **The owner's bar:** every list, stock, timeframe and combination: linked charts show the new symbol in the SAME frame (SYNC_SKEW 0), within 40 ms, in one paint, with no follow-up heavy re-render, no memory growth and no page error.
