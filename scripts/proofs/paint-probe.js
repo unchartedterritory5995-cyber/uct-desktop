@@ -7,7 +7,8 @@
 // Injected at document start (before any app script), so the library's own scheduling goes through it:
 // lightweight-charts 5.2 paints in `window.requestAnimationFrame` (ChartWidget's invalidate handler). Every rAF
 // callback is wrapped; a callback that DRAWS into a canvas inside a flip-proof chart widget is a PAINT of that
-// chart. From inside that callback, AFTER its draw calls, a message is posted on a fresh MessageChannel: a task
+// chart. From inside that callback, AFTER its draw calls, a user-blocking task is posted (scheduler.postTask; a
+// MessageChannel message where that is missing, see THE STAMP'S TASK below): a task
 // that can only run once the current rendering update (all of this frame's callbacks, then style, layout, paint
 // and the commit) has finished. Its performance.now() is the paint's `complete`: never earlier than that chart's
 // own draws (validation 1, 2026-11-21: the next rAF's TIMESTAMP was, when a frame overran, earlier than the second
@@ -24,6 +25,16 @@
   const P = (window.__paintProbe = { paints: [], max: 30000, cur: null, lastCv: null, lastW: null, marks: false, onComplete: null, armed: null })
   const raf0 = window.requestAnimationFrame.bind(window)
   P.raf0 = raf0
+  // THE STAMP'S TASK (2026-11-21, after owner8's trace: a fresh MessageChannel message waited behind the page's own
+  // queued work, a second frame, timers and a 15.5 ms GC in an IndexedDB reply, and landed 24.5 ms after the commit).
+  // A user-blocking scheduler.postTask task runs ahead of default-priority tasks, so it lands at the first free
+  // moment after the rendering update. It still cannot pre-empt a task or GC that is already RUNNING when the
+  // commit ends: the trace check reports that residual. MessageChannel only where postTask is missing.
+  const PT = window.scheduler && typeof window.scheduler.postTask === 'function' ? window.scheduler : null
+  P.stampVia = PT ? 'postTask:user-blocking' : 'MessageChannel'
+  P.provoke = null
+  P.provoked = []
+  const mc = (fn) => { const ch = new MessageChannel(); ch.port1.onmessage = () => { ch.port1.close(); fn() }; ch.port2.postMessage(0) }
   const wOf = new WeakMap()
   const widgetOf = (cv) => {
     if (!cv || !cv.closest) return null
@@ -79,20 +90,27 @@
             if (P.marks) { try { performance.mark('__lwcPaint:' + w) } catch (e) { /* */ } }
             ps.push(p)
           }
+          // --provoke-gc (validation only): a default-priority task queued BEFORE the stamp that runs a full GC, the
+          // owner8 flip-2 shape (a 15.5 ms MajorGC in an IndexedDB reply right after the commit), on demand
+          if (P.provoke === 'gc' && ps.some((p) => p.first) && typeof window.gc === 'function') { P.provoke = null; try { mc(() => { const t0 = performance.now(); window.gc(); P.provoked.push({ at: t0, ms: performance.now() - t0 }); if (P.marks) { try { performance.mark('__provokedGc') } catch (e) { /* */ } } }) } catch (e) { /* */ } }
           // the frame these draws belong to is complete when a task posted now gets to run
-          try {
-            const ch = new MessageChannel()
-            ch.port1.onmessage = () => {
-              const now = performance.now()
-              ch.port1.close()
-              for (const p of ps) {
-                p.complete = now
-                if (P.marks) { try { performance.mark('__frameDone:' + p.w) } catch (e) { /* */ } }
-                if (P.onComplete) { try { P.onComplete(p) } catch (e) { /* the proof's hook */ } }
-              }
+          const done = () => {
+            const now = performance.now()
+            for (const p of ps) {
+              p.complete = now
+              if (P.marks) { try { performance.mark('__frameDone:' + p.w) } catch (e) { /* */ } }
+              if (P.onComplete) { try { P.onComplete(p) } catch (e) { /* the proof's hook */ } }
             }
-            ch.port2.postMessage(0)
-          } catch (e) { /* no MessageChannel: no stamp, scored as not on screen */ }
+          }
+          try {
+            if (PT) PT.postTask(done, { priority: 'user-blocking' }).catch(() => { /* aborted: no stamp */ })
+            else mc(done)
+          } catch (e) { /* neither: no stamp, scored as not on screen */ }
+          // traced flips: the OLD stamp too (a fresh MessageChannel, default priority), so the trace check can put
+          // both against the same commit
+          if (P.marks && PT) {
+            try { mc(() => { const now = performance.now(); for (const p of ps) { p.completeMc = now; try { performance.mark('__frameDoneMc:' + p.w) } catch (e) { /* */ } } }) } catch (e) { /* */ }
+          }
         }
       }
     })

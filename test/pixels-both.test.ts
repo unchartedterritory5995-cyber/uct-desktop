@@ -125,6 +125,27 @@ describe('--compare against the production baseline', () => {
     expect(M.compareResults([base[0]], base).line).toMatch(/^INCONCLUSIVE: 1 baseline cell\(s\) not measured/)
   })
 
+  it('runs stamped by different tasks are never compared: INCONCLUSIVE, re-measure the baseline', () => {
+    const px = (via?: string) => (r: ReturnType<typeof row>) => ({ ...r, summary: { ...r.summary, stamp: 'pixels', ...(via ? { stampVia: via } : {}) } })
+    const old = base.map(px()) // measured before the field existed: a fresh MessageChannel
+    const mc = base.map(px('MessageChannel'))
+    const pt = base.map(px('postTask:user-blocking'))
+    expect(M.stampVias(old)).toEqual(['MessageChannel'])
+    expect(M.compareResults(mc, old).verdict).toBe('PASS')
+    expect(M.compareResults(pt, pt).verdict).toBe('PASS')
+    const c = M.compareResults(pt, old)
+    expect(c).toMatchObject({ verdict: 'INCONCLUSIVE', rows: [], stampMismatch: { current: ['postTask:user-blocking'], baseline: ['MessageChannel'] } })
+    expect(c.line).toMatch(/^INCONCLUSIVE: the stamps differ \(this run: postTask:user-blocking; baseline: MessageChannel\): re-measure the baseline/)
+    expect(M.compareResults([pt[0], mc[1]], pt).verdict).toBe('INCONCLUSIVE') // a run mixing the two is no ruler either
+  })
+
+  it('a scored cell carries the stamp task its run used', () => {
+    const cell = { id: 'x', motion: 'next' }
+    const j = (o: Record<string, unknown>) => ({ tf: 'D', tf2: '30', dwell: 1500, flips: [flip([paint('flip-chart', 1016.7, 1022, 20, 1033.4), paint('flip-chart-2', 1016.7, 1024, 21, 1033.4)])], ...o })
+    expect(M.scoreCell(j({ stampVia: 'postTask:user-blocking' }), cell).summary.stampVia).toBe('postTask:user-blocking')
+    expect(M.scoreCell(j({}), cell).summary.stampVia).toBe('MessageChannel')
+  })
+
   it('Mann-Whitney: identical samples are not different; a clear shift is', () => {
     const a = [10, 11, 12, 13, 14, 15, 16, 17, 18, 19]
     expect(M.mannWhitneyGreater(a, a)).toBeGreaterThan(0.4)

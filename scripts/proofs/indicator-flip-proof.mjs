@@ -103,6 +103,10 @@ const NO_PAINT_PROBE = arg('no-paint-probe', '') === '1'
 // those flips, <out>.flip<i>.trace.json, with `traceAlign` (a user-timing mark's page time) and the paint probe's
 // marks on, for pixels-trace-check.mjs.
 const TRACE_FLIPS = new Set(arg('trace', '').split(',').filter(Boolean).map(Number))
+// --provoke-gc=1 (stamp validation only): on every other traced flip, the probe queues a default-priority task that
+// runs a full GC right after the first new-symbol paint, BEFORE its stamp task (Chrome runs with --expose-gc): the
+// owner8 flip-2 shape on demand, so the trace check can show the stamp landing ahead of it (or not)
+const PROVOKE_GC = arg('provoke-gc', '') === '1'
 const TRACE_CATS = ['devtools.timeline', 'disabled-by-default-devtools.timeline', 'disabled-by-default-devtools.timeline.frame', 'toplevel', 'blink.user_timing', 'latencyInfo', 'input', 'cc', 'gpu', 'viz', 'benchmark', 'blink', 'scheduler']
 // --stub=ms (LOCAL SANDBOX ONLY): the chart header's small per-symbol reads (research snapshot,
 // adjustment basis, event markers) are answered here from a canned body after `ms`, so a sandbox
@@ -233,6 +237,7 @@ const CHROME_VERSION = arg('chrome-version', '')
 const launchArgs = HEADLESS
   ? ['--headless=new', '--window-size=1440,950', ...(CHROME_VERSION ? [`--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`] : [])]
   : ['--disable-features=CalculateNativeWinOcclusion', `--window-position=${D.x},${D.y}`]
+if (PROVOKE_GC) launchArgs.push('--js-flags=--expose-gc')
 const app = await startApp('chrome', PORT, launchArgs, PROFILE ? { profile: PROFILE } : {})
 const machine = startMachineLog(app.child.pid)
 let board = null
@@ -561,6 +566,9 @@ try {
   console.log(`list ${pick.name}; rows ${out.page.rows}; series ${out.page.series.join(' ')}`)
 
   out.paintProbe = await run(`!!window.__paintProbe`)
+  // which task makes the frame-complete stamp: --compare refuses to put runs made with different ones side by side
+  out.stampVia = out.paintProbe ? await run(`window.__paintProbe.stampVia||'MessageChannel'`) : null
+  if (PROVOKE_GC) out.provokeGc = true
   if (!out.paintProbe && !NO_PAINT_PROBE) throw new Error('the paint probe is not in the page: no presentation stamp')
   if (STAMP_ONLY && NO_PAINT_PROBE) throw new Error('--stamp-only with --no-paint-probe measures nothing')
   // ⛔ (coordinator 2026-11-21) every measurement is of the PATCHED lightweight-charts (the app's build applies
@@ -652,6 +660,7 @@ try {
     const K = (UPDOWN === 'downup' && i >= FLIPS) ? { key: 'ArrowUp', vk: 38 } : { key: 'ArrowDown', vk: 40 }
     const tracing = TRACE_FLIPS.has(i)
     let traceAlign = null
+    let provokedGc = null
     if (tracing) {
       if (!globalThis.__traceSink) {
         globalThis.__traceSink = { on: false, events: [], done: null }
@@ -666,7 +675,8 @@ try {
       T.events = []; T.on = true; T.done = null
       await c.send('Tracing.start', { transferMode: 'ReportEvents', traceConfig: { recordMode: 'recordAsMuchAsPossible', includedCategories: TRACE_CATS } })
       await sleep(50)
-      traceAlign = await run(`(()=>{const t=performance.now();performance.mark('__flipAlign');if(window.__paintProbe)window.__paintProbe.marks=true;return t})()`)
+      const provoke = PROVOKE_GC && [...TRACE_FLIPS].sort((a, b) => a - b).indexOf(i) % 2 === 1
+      traceAlign = await run(`(()=>{const t=performance.now();performance.mark('__flipAlign');const P=window.__paintProbe;if(P){P.marks=true;P.provoked=[];P.provoke=${provoke ? "'gc'" : 'null'}}return t})()`)
     }
     const before = await run(`(()=>{const F=window.__flip;F.arm0&&F.arm0();F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,sig3:F.chart3?F.sigOf(F.chart3):null,now:performance.now()}})()`)
     const profiling = PROFILE_FLIPS.has(i)
@@ -689,7 +699,7 @@ try {
     else await sleep(DWELL)
     if (tracing) {
       const T = globalThis.__traceSink
-      await run(`(()=>{if(window.__paintProbe)window.__paintProbe.marks=false;return true})()`)
+      provokedGc = await run(`(()=>{const P=window.__paintProbe;if(!P)return null;P.marks=false;P.provoke=null;return P.provoked&&P.provoked.length?P.provoked.slice():null})()`)
       const fin = new Promise((r) => { T.done = r })
       await c.send('Tracing.end')
       await Promise.race([fin, sleep(30000)])
@@ -703,7 +713,7 @@ try {
       out.flips.push({ i, dir: K.key, before: before.sig, before2: before.sig2, before3: before.sig3, key: got.key, frames: got.frames, end: got.end, end2: got.end2, end3: got.end3, sym: got.sym, paints: got.paints, evt: got.evt, busy: got.busy, busyFrom: got.busyFrom, busyEnd: got.busyEnd })
       if ((i + 1) % SOAK_EVERY === 0 || i === total - 1) await soakSample(i + 1)
     } else {
-      out.flips.push({ i, dir: K.key, before: before.sig, before2: before.sig2, before3: before.sig3, ...got, ...(traceAlign != null ? { traceAlign } : {}) })
+      out.flips.push({ i, dir: K.key, before: before.sig, before2: before.sig2, before3: before.sig3, ...got, ...(traceAlign != null ? { traceAlign } : {}), ...(provokedGc ? { provokedGc } : {}) })
       save()
     }
   }
