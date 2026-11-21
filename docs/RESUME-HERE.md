@@ -11,6 +11,16 @@ Last updated 2026-11-12 ~19:50 CT by an agent session. Read this first after a r
 - **By hand:** `node scripts/nightly/chart-canary.mjs` queues for the heavy lock itself; `--board-busy=<marker>` waits for another agent's bench-board marker; `--rescore=<runId>` scores a recorded run again after a rules change.
 - **Flip proof additions:** `--tf2`, `--soak-every=N` / `--abort-heap-mb=N`, and `out.pageErrors` in every run.
 
+## Chart acceptance matrix (2026-11-20)
+
+- **The owner's bar:** every list, stock, timeframe and combination: linked charts show the new symbol in the SAME frame (SYNC_SKEW 0), within 40 ms, in one paint, with no follow-up heavy re-render, no memory growth and no page error.
+- **Run:** `node scripts/proofs/acceptance-matrix.mjs` with a selection such as `--layouts=D+60m --lists=sp500 --motions=next --stores=off`. Use `--plan` for the cells and their time, and `--report` to rebuild the grid. The full matrix is 896 cells, about 52 h at the default dwells; it resumes and `--budget-min` caps a night.
+- **Output:** `D:\uct-history\acceptance\<date>\` holds `grid.md` (PASS / PASS* / FAIL / ERROR / SKIP per cell, plus the 10 worst switches with their timelines), `results.json`, and `cells\<id>.json` / `.score.json`.
+- **How it runs:** each cell is a heavy_lock job at normal priority, on a fresh throwaway profile.
+- **PASS\*:** StockChart renders are counted only on a render-probe build (`--render-probe=1 --dist=<build>`). Without one, the best a cell can get is PASS*.
+- **Lists that need input:** `--user-list=<name>` (the bench member's own list) and `--screen-id=<n>` (a saved screen) enable the `user` and `screener` rows; without them those rows are SKIP.
+- **Code:** rules in `acceptance-matrix-lib.mjs` (tests `test/acceptance-matrix.test.ts`). The bench-board marker and restore check live in `bench-board.mjs`, shared with the chart canary.
+
 ## Plans (local, not in this repo)
 
 - **THE PLAN (single authority, v1.5):** `C:\Users\Patrick\reports\UCT desktop app FINAL plan - speed and reliability.md` (backup beside it)
