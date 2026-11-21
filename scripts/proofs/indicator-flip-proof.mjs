@@ -13,6 +13,42 @@
 // Sends no OS keys: key presses are DevTools-dispatched into this run's own page.
 import { readFileSync, writeFileSync } from 'node:fs'
 import { startApp, sleep, BASE } from './launch.mjs'
+import { execFileSync } from 'node:child_process'
+import { cpus, freemem } from 'node:os'
+
+// THIS PC IS SHARED (coordinator 2026-11-21): every run logs the machine's CPU and free RAM each second, and how
+// much of the CPU was NOT this run (system busy time minus this run's browser tree and this process). A run is
+// UNDER LOAD when other processes averaged more than 1 core, or free RAM fell under 6 GB.
+function startMachineLog(chromePid) {
+  const sys = () => cpus().reduce((a, c) => { const t = c.times; a.busy += t.user + t.nice + t.sys + t.irq; a.all += t.user + t.nice + t.sys + t.irq + t.idle; return a }, { busy: 0, all: 0 })
+  const tree = () => {
+    const ps = `$all = Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,KernelModeTime,UserModeTime; $ids = New-Object 'System.Collections.Generic.HashSet[int]'; [void]$ids.Add(${chromePid}); do { $n = $ids.Count; foreach ($p in $all) { if ($ids.Contains([int]$p.ParentProcessId)) { [void]$ids.Add([int]$p.ProcessId) } } } while ($ids.Count -ne $n); $s = 0; foreach ($p in $all) { if ($ids.Contains([int]$p.ProcessId)) { $s += $p.KernelModeTime + $p.UserModeTime } }; [math]::Round($s / 10000)`
+    try { return Number(execFileSync('powershell.exe', ['-NoProfile', '-Command', ps], { encoding: 'utf8', timeout: 30000 }).trim()) } catch { return null }
+  }
+  const n = cpus().length
+  const t0 = Date.now(), s0 = sys(), c0 = tree(), p0 = process.cpuUsage()
+  const samples = []
+  let prev = s0
+  const timer = setInterval(() => { const cur = sys(); const all = cur.all - prev.all; samples.push({ t: Math.round((Date.now() - t0) / 1000), cpu: all > 0 ? Math.round(((cur.busy - prev.busy) / all) * 1000) / 10 : null, freeMB: Math.round(freemem() / 1048576) }); prev = cur }, 1000)
+  timer.unref()
+  return {
+    stop() {
+      clearInterval(timer)
+      const wall = (Date.now() - t0) / 1000, s1 = sys(), c1 = tree(), pu = process.cpuUsage(p0)
+      const sysCoreS = (s1.busy - s0.busy) / 1000 // cpus() times are ms per core
+      const mineS = (c0 != null && c1 != null ? (c1 - c0) / 1000 : 0) + (pu.user + pu.system) / 1e6
+      const cpu = samples.map((x) => x.cpu).filter((x) => x != null).sort((a, b) => a - b)
+      const q = (p) => (cpu.length ? cpu[Math.min(cpu.length - 1, Math.floor(cpu.length * p))] : null)
+      const free = samples.map((x) => x.freeMB)
+      const othersCores = wall > 0 ? Math.round(((sysCoreS - mineS) / wall) * 100) / 100 : null
+      const freeMinMB = free.length ? Math.min(...free) : Math.round(freemem() / 1048576)
+      const why = []
+      if (othersCores != null && othersCores > 1) why.push(`other processes averaged ${othersCores} cores`)
+      if (freeMinMB < 6144) why.push(`free RAM fell to ${freeMinMB} MB`)
+      return { cores: n, wallS: Math.round(wall), cpuMedPct: q(0.5), cpuP90Pct: q(0.9), freeMinMB, runCpuS: Math.round(mineS * 10) / 10, systemBusyCoreS: Math.round(sysCoreS * 10) / 10, othersCores, underLoad: why.length > 0, why, samples: samples.slice(0, 900) }
+    },
+  }
+}
 
 const OUT = process.argv[2]
 const arg = (k, d) => { const a = process.argv.find((x) => x.startsWith(`--${k}=`)); return a ? a.split('=').slice(1).join('=') : d }
@@ -48,6 +84,19 @@ const TYPED_PAUSE = Number(arg('typed-pause', '300'))
 const JUMP = Number(arg('jump', '9'))
 const HOVER = Number(arg('hover', '250'))
 const AUTOREPEAT = arg('autorepeat', '') === '1' // a held key (repeat key-downs, one key-up), not taps
+// --cadence=ms (arrow-key patterns): the next key is pressed this long after the previous one (the per-flip reads
+// are inside it), instead of a dwell AFTER each read: 150 / 300 ms taps, or 33 ms with --autorepeat=1 (a held key
+// at the OS repeat rate). --last-dwell still sets how long the final flip is watched.
+const CADENCE = Number(arg('cadence', '0'))
+// --light-sampler=1: the per-frame sample reads only each chart's newest bar and view, never its indicator series
+// (engineSeries copies every series each call): the instrument stays out of the frame it measures. Implies the
+// cheap bar count. The presentation stamp (paint-probe.js) needs neither.
+const LIGHT_SAMPLER = arg('light-sampler', '') === '1'
+// --trace=i,j (arrow-key patterns; ported from the device-store agent's copy, 2026-11-20): a Chromium trace of
+// those flips, <out>.flip<i>.trace.json, with `traceAlign` (a user-timing mark's page time) and the paint probe's
+// marks on, for pixels-trace-check.mjs.
+const TRACE_FLIPS = new Set(arg('trace', '').split(',').filter(Boolean).map(Number))
+const TRACE_CATS = ['devtools.timeline', 'disabled-by-default-devtools.timeline', 'disabled-by-default-devtools.timeline.frame', 'toplevel', 'blink.user_timing', 'latencyInfo', 'input', 'cc', 'gpu', 'viz', 'benchmark', 'blink', 'scheduler']
 // --stub=ms (LOCAL SANDBOX ONLY): the chart header's small per-symbol reads (research snapshot,
 // adjustment basis, event markers) are answered here from a canned body after `ms`, so a sandbox
 // with no provider data still shows header values and the server makes no provider call for them.
@@ -93,15 +142,16 @@ if (!SETS[SET]) throw new Error(`unknown --set ${SET}`)
 // frame. `count` is series.data().length, a copy of every row: read per frame it cost 80-136 ms of each
 // 60m flip's first 700 ms (2026-11-19 CPU profiles), inflating every long task this proof reports. Use
 // it for freeze (long-task) runs; leave it off where a count-only change must be timed to the frame.
-const CHEAP_SAMPLER = arg('cheap-sampler', '') === '1'
+const CHEAP_SAMPLER = arg('cheap-sampler', '') === '1' || LIGHT_SAMPLER
 const SAMPLER = `(()=>{
   const CHEAP = ${CHEAP_SAMPLER ? 'true' : 'false'};
+  const LIGHT = ${LIGHT_SAMPLER ? 'true' : 'false'};
   if (window.__flip) { window.__flip.on = false }
   const F = window.__flip = { on: true, frames: [], res: [], keys: [], t0: performance.now() };
   const lastFinite = (d) => { for (let i = d.length - 1, n = 0; i >= 0 && n < 400; i--, n++) { const v = d[i] && d[i].value; if (typeof v === 'number' && Number.isFinite(v)) return d[i].time + '=' + v } return 'none' };
   const sigOf = (id) => {
     const h = (window.__uctChartDebug || {})[id]; if (!h) return null;
-    const nb = h.newestBar(); const es = h.engineSeries() || [];
+    const nb = h.newestBar(); const es = LIGHT ? [] : (h.engineSeries() || []);
     const tc = nb ? nb.time + '|' + nb.close : null; F.fc = (F.fc || 0) + 1;
     let cnt;
     const st = (F.st = F.st || {})[id] || (F.st[id] = {}); cnt = st.count;
@@ -114,6 +164,18 @@ const SAMPLER = `(()=>{
     for (const s of es) { const k = s.instanceId + '::' + s.plotKey; let n = s.data.length, lf = lastFinite(s.data); for (const r of s.runs) { n += r.length; if (lf === 'none') lf = lastFinite(r) } o.s[k] = n + '|' + lf }
     return o };
   F.sigOf = sigOf;
+  // ── the presentation stamp's per-flip state (paint-probe.js records every chart paint and when it was presented)
+  const PP = window.__paintProbe || null;
+  F.evt = []; F.busy = []; F.gen = 0; F.pp0 = 0; F.arm = null;
+  // Event Timing: the input's own first presentation (a cross-check: the charts cannot be on screen before it)
+  try { new PerformanceObserver((l) => { for (const e of l.getEntries()) { if (F.evt.length < 200 && (e.name === 'keydown' || e.name === 'keyup' || e.name === 'click' || e.name === 'pointerdown')) F.evt.push({ n: e.name, s: e.startTime, ps: e.processingStart, pe: e.processingEnd, d: e.duration }) } }).observe({ type: 'event', durationThreshold: 16, buffered: false }) } catch (e) {}
+  // THE POST-PAINT BUDGET: once every linked chart has PRESENTED the new symbol, a message-channel ping runs for
+  // 1 s (or until the next key): any gap over 8 ms between its turns is the main thread busy that long.
+  F.startBusy = (from, gen) => { try { const ch = new MessageChannel(); let last = performance.now(); const end = from + 1000; ch.port1.onmessage = () => { const now = performance.now(); if (now - last > 8 && F.busy.length < 500) F.busy.push({ s: Math.round(last * 10) / 10, d: Math.round((now - last) * 10) / 10 }); last = now; if (now < end && F.gen === gen) ch.port2.postMessage(0); else { ch.port1.close(); F.busyEnd = now } }; F.busyFrom = from; ch.port2.postMessage(0) } catch (e) {} };
+  const idsOf = () => [F.chart, F.chart2, F.chart3].filter(Boolean);
+  F.arm0 = () => { F.gen++; F.busy = []; F.evt = []; F.busyFrom = null; F.busyEnd = null; F.pp0 = PP ? PP.paints.length : 0; const need = {}; for (const id of idsOf()) { try { const nb = window.__uctChartDebug[id].newestBar(); need[id] = nb ? { time: nb.time, close: nb.close } : { time: null, close: null } } catch (e) { need[id] = { time: null, close: null } } } F.arm = { gen: F.gen, need, got: {}, done: false } };
+  F.take = () => ({ paints: PP ? PP.paints.slice(F.pp0) : null, evt: F.evt.slice(), busy: F.busy.slice(), busyFrom: F.busyFrom, busyEnd: F.busyEnd });
+  if (PP) PP.onPresent = (p) => { const A = F.arm; if (!A || A.gen !== F.gen || A.done || !F.keys.length || p.end < F.keys[0]) return; const b = A.need[p.w]; if (!b || A.got[p.w]) return; if (p.close === b.close && p.time === b.time) return; A.got[p.w] = p; if (Object.keys(A.got).length === Object.keys(A.need).length) { A.done = true; F.startBusy(Math.max(...Object.values(A.got).map((x) => x.present)), A.gen) } };
   let prev = '';
   // a sample that throws (a chart handle mid-remount) is counted, never left to stop the loop or to read as a page error
   const tick = (t) => { if (!F.on) return; try { const n = performance.now(); const o = sigOf(F.chart); const o2 = F.chart2 ? sigOf(F.chart2) : null; const o3 = F.chart3 ? sigOf(F.chart3) : null; const j = JSON.stringify([o, o2, o3]); if (j !== prev) { F.frames.push(o3 ? { t: t, n: n, o: o, o2: o2, o3: o3 } : o2 ? { t: t, n: n, o: o, o2: o2 } : { t: t, n: n, o: o }); prev = j } } catch (e) { F.sampleErrs = (F.sampleErrs || 0) + 1 } requestAnimationFrame(tick) };
@@ -163,6 +225,7 @@ const launchArgs = HEADLESS
   ? ['--headless=new', '--window-size=1440,950', ...(CHROME_VERSION ? [`--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${CHROME_VERSION} Safari/537.36`] : [])]
   : ['--disable-features=CalculateNativeWinOcclusion', `--window-position=${D.x},${D.y}`]
 const app = await startApp('chrome', PORT, launchArgs, PROFILE ? { profile: PROFILE } : {})
+const machine = startMachineLog(app.child.pid)
 let board = null
 let originalVersion = null
 let exitCode = 0
@@ -411,6 +474,8 @@ try {
   // default; the buffer is raised before the page loads and the whole timeline is kept as
   // out.allRes after the flips (same clock as each flip's `key`).
   await c.send('Page.addScriptToEvaluateOnNewDocument', { source: `try{performance.setResourceTimingBufferSize(50000)}catch(e){}` })
+  // THE PRESENTATION STAMP: every chart paint (lightweight-charts' rAF draw) and when its frame was presented
+  await c.send('Page.addScriptToEvaluateOnNewDocument', { source: readFileSync(new URL('./paint-probe.js', import.meta.url), 'utf8') })
   // --idbtrace: every IndexedDB transaction the page opens (database, mode, stores, when it was
   // created, when it finished) and every get/put request inside it (store, key, how long), into
   // out.idbTrace for idb-trace-report.mjs. Installed before the page loads; times are the page's
@@ -484,6 +549,13 @@ try {
   if (out.page.hidden) throw new Error('page is hidden: no frames would be drawn')
   console.log(`list ${pick.name}; rows ${out.page.rows}; series ${out.page.series.join(' ')}`)
 
+  out.paintProbe = await run(`!!window.__paintProbe`)
+  if (!out.paintProbe) throw new Error('the paint probe is not in the page: no presentation stamp')
+  // ⛔ (coordinator 2026-11-21) every measurement is of the PATCHED lightweight-charts (the app's build applies
+  // app/scripts/chartLibraryPatch.mjs): the page's chart chunk must carry the patch's own marks
+  out.lwcPatch = await run(`(async()=>{const js=[...new Set(performance.getEntriesByType('resource').map(e=>e.name).filter(u=>/\\/assets\\/[^?]+\\.js/.test(u)))];const order=js.filter(u=>/chart/i.test(u)).concat(js.filter(u=>!/chart/i.test(u)));for(const u of order.slice(0,400)){try{const t=await (await fetch(u)).text();if(t.indexOf('uctDayMemo')>=0||t.indexOf('lightweight-charts')>=0||t.indexOf('createChart')>=0){return {chunk:u.replace(location.origin,''),patched:t.indexOf('uctDayMemo')>=0&&t.indexOf('uct:markers-redraw-no-copy')>=0}}}catch(e){}}return {chunk:null,patched:null}})()`)
+  console.log(`chart library: ${out.lwcPatch.patched ? 'PATCHED' : out.lwcPatch.patched === false ? 'NOT PATCHED' : 'not found'} (${out.lwcPatch.chunk})`)
+  if (out.lwcPatch.patched === false) throw new Error(`the page runs an UNPATCHED lightweight-charts (${out.lwcPatch.chunk}): build it with the app's vite build`)
   await run(SAMPLER)
   if (TF2) await waitFor(`!!(window.__uctChartDebug && window.__uctChartDebug['flip-chart-2'] && window.__uctChartDebug['flip-chart-2'].newestBar())`, 240000)
   if (TF3) await waitFor(`!!(window.__uctChartDebug && window.__uctChartDebug['flip-chart-3'] && window.__uctChartDebug['flip-chart-3'].newestBar())`, 240000)
@@ -514,7 +586,7 @@ try {
     const n = UPDOWN === 'typed' ? TYPED.length : FLIPS
     const CHART = '[data-widget-id="flip-chart"]'
     for (let i = 0; i < n; i++) {
-      await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;F.enterKeys=${UPDOWN === 'typed'};return true})()`)
+      await run(`(()=>{const F=window.__flip;F.arm0&&F.arm0();F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;F.enterKeys=${UPDOWN === 'typed'};return true})()`)
       let target = null
       if (UPDOWN === 'typed') {
         target = TYPED[i]
@@ -534,11 +606,11 @@ try {
           const dbg = await run(`(()=>{const a=document.activeElement;const ins=[...document.querySelectorAll('input')].filter(x=>x.offsetParent).map(x=>({ph:x.placeholder||'',v:x.value,cls:String(x.className).slice(0,40)}));const opts=[...document.querySelectorAll('[role=option],[class*="result"],[class*="Result"]')].filter(x=>x.offsetParent).slice(0,4).map(x=>x.textContent.trim().slice(0,30));return {active:(a&&a.tagName)+'.'+String(a&&a.className).slice(0,50),val:a&&a.value,inputs:ins.slice(0,4),opts}})()`)
           console.log(`typed ${target}: ${JSON.stringify(dbg)}`)
         }
-        const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,sig3:F.chart3?F.sigOf(F.chart3):null}})()`)
+        const before = await run(`(()=>{const F=window.__flip;F.arm0&&F.arm0();F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,sig3:F.chart3?F.sigOf(F.chart3):null}})()`)
         await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Enter', code: 'Enter', text: '\r', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 })
         await c.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 })
         await sleep(DWELL)
-        const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,end3:F.chart3?F.sigOf(F.chart3):null,title:document.title}})()`)
+        const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,end3:F.chart3?F.sigOf(F.chart3):null,title:document.title,...(F.take?F.take():{})}})()`)
         // --dump-times: every candle time the chart holds at the end of the dwell (to find a hole in its history)
         if (process.argv.includes('--dump-times')) {
           got.times = await run(`(()=>{const h=(window.__uctChartDebug||{})['flip-chart'];const t=h&&h.renderedTail?h.renderedTail(100000):null;return t?t.map(b=>b.time):null})()`)
@@ -552,23 +624,45 @@ try {
         const pick2 = JUMP > 12 ? await run(`(async()=>{const W=document.querySelector('[data-widget-id="flip-wl"]')||document;const sel=W.querySelector('[data-watch-sym][aria-selected="true"],[data-watch-sym][data-selected="true"],[data-watch-sym][class*="listRowSelected"]');const wrapOf=(el)=>el&&el.closest('[data-index]');const sw=wrapOf(sel)||W.querySelector('[data-index]');if(!sw)return null;const from=Number(sw.getAttribute('data-index'));const total=Number(W.querySelectorAll('[data-index]').length);const scr=(()=>{for(let p=sw.parentElement;p;p=p.parentElement){const cs=getComputedStyle(p);if((cs.overflowY==='auto'||cs.overflowY==='scroll')&&p.scrollHeight>p.clientHeight)return p}return null})();if(!scr)return null;const h=sw.getBoundingClientRect().height||30;const want=from+${JUMP};const frame=()=>new Promise((r)=>requestAnimationFrame(()=>r()));let tw=null;for(let i=0;i<40&&!tw;i++){tw=W.querySelector('[data-index="'+want+'"]');if(tw)break;const max=scr.scrollHeight-scr.clientHeight;if(scr.scrollTop>=max-1){break}scr.scrollTop=Math.min(max,scr.scrollTop+Math.max(h*20,scr.clientHeight*0.8));await frame();await frame()}if(!tw){scr.scrollTop=0;await frame();await frame();tw=W.querySelector('[data-index="'+(${JUMP}%Math.max(1,total))+'"]')||W.querySelector('[data-index]')}const r=tw.querySelector('[data-watch-sym]')||tw;r.scrollIntoView({block:'center'});await frame();for(const t of ['pointerover','pointerenter','mouseover','mouseenter'])r.dispatchEvent(new (t.startsWith('pointer')?PointerEvent:MouseEvent)(t,{bubbles:t.endsWith('over')}));return r.getAttribute('data-watch-sym')})()`) : await run(`(()=>{const rows=[...document.querySelectorAll('[data-watch-sym]')];const sel=rows.findIndex(r=>/listRowSelected/.test(String(r.className))||r.getAttribute('aria-selected')==='true');const at=((sel<0?0:sel)+${JUMP})%rows.length;const r=rows[at];r.scrollIntoView({block:'center'});for(const t of ['pointerover','pointerenter','mouseover','mouseenter'])r.dispatchEvent(new (t.startsWith('pointer')?PointerEvent:MouseEvent)(t,{bubbles:t.endsWith('over')}));return r.getAttribute('data-watch-sym')})()`)
         target = pick2
         await sleep(HOVER)
-        const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,sig3:F.chart3?F.sigOf(F.chart3):null}})()`)
+        const before = await run(`(()=>{const F=window.__flip;F.arm0&&F.arm0();F.frames.length=0;F.keys.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,sig3:F.chart3?F.sigOf(F.chart3):null}})()`)
         await run(`(()=>{const r=document.querySelector('[data-watch-sym=${JSON.stringify(String(target))}]');window.__flip.keys.push(performance.now());r.dispatchEvent(new MouseEvent('mousedown',{bubbles:true}));r.click();return true})()`)
         await sleep(DWELL)
-        const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,end3:F.chart3?F.sigOf(F.chart3):null,title:document.title}})()`)
+        const got = await run(`(()=>{const F=window.__flip;return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,end3:F.chart3?F.sigOf(F.chart3):null,title:document.title,...(F.take?F.take():{})}})()`)
         out.flips.push({ i, dir: 'jump', sym: target, before: before.sig, before2: before.sig2, before3: before.sig3, ...got })
       }
       save()
     }
   }
   if ((SOAK_EVERY && total) || (HEAP_ENDS && total)) await soakSample(0)
+  let cadOverhead = 8, cadSleepEnd = null
+  out.cadence = CADENCE || null
   for (let i = 0; i < total; i++) {
     const K = (UPDOWN === 'downup' && i >= FLIPS) ? { key: 'ArrowUp', vk: 38 } : { key: 'ArrowDown', vk: 40 }
-    const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,sig3:F.chart3?F.sigOf(F.chart3):null,now:performance.now()}})()`)
+    const tracing = TRACE_FLIPS.has(i)
+    let traceAlign = null
+    if (tracing) {
+      if (!globalThis.__traceSink) {
+        globalThis.__traceSink = { on: false, events: [], done: null }
+        const T = globalThis.__traceSink
+        c.on((m) => {
+          if (!T.on) return
+          if (m.method === 'Tracing.dataCollected') { for (const e of m.params.value) T.events.push(e) }
+          else if (m.method === 'Tracing.tracingComplete') { T.on = false; if (T.done) T.done() }
+        })
+      }
+      const T = globalThis.__traceSink
+      T.events = []; T.on = true; T.done = null
+      await c.send('Tracing.start', { transferMode: 'ReportEvents', traceConfig: { recordMode: 'recordAsMuchAsPossible', includedCategories: TRACE_CATS } })
+      await sleep(50)
+      traceAlign = await run(`(()=>{const t=performance.now();performance.mark('__flipAlign');if(window.__paintProbe)window.__paintProbe.marks=true;return t})()`)
+    }
+    const before = await run(`(()=>{const F=window.__flip;F.arm0&&F.arm0();F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,sig3:F.chart3?F.sigOf(F.chart3):null,now:performance.now()}})()`)
     const profiling = PROFILE_FLIPS.has(i)
     if (profiling) { await c.send('Profiler.enable'); await c.send('Profiler.setSamplingInterval', { interval: 100 }); await c.send('Profiler.start') }
     // --autorepeat=1: a HELD key, as the OS sends it: the first press, then auto-repeated key-downs
     // (`repeat: true` in the page), and ONE key-up after the last (or before a direction change).
+    if (CADENCE && cadSleepEnd != null) cadOverhead = 0.7 * cadOverhead + 0.3 * Math.max(0, Date.now() - cadSleepEnd)
+    const keyAt = Date.now()
     const firstOfKey = i === 0 || (UPDOWN === 'downup' && i === FLIPS)
     const lastOfKey = i === total - 1 || (UPDOWN === 'downup' && i === FLIPS - 1)
     await c.send('Input.dispatchKeyEvent', { type: 'keyDown', key: K.key, code: K.key, windowsVirtualKeyCode: K.vk, nativeVirtualKeyCode: K.vk, ...(AUTOREPEAT && !firstOfKey ? { autoRepeat: true } : {}) })
@@ -578,14 +672,26 @@ try {
       const { profile } = await c.send('Profiler.stop')
       writeFileSync(OUT.replace(/\.json$/, '') + `.flip${i}.cpuprofile`, JSON.stringify(profile))
       await sleep(Math.max(0, DWELL - 700))
-    } else await sleep(LAST_DWELL > 0 && i === total - 1 ? LAST_DWELL : DWELL)
-    const got = await run(`(()=>{const F=window.__flip;const sel=document.querySelector('[data-watch-sym][aria-selected="true"],[data-watch-sym][data-selected="true"],[data-watch-sym][class*="listRowSelected"]');return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,end3:F.chart3?F.sigOf(F.chart3):null,sym:sel?sel.getAttribute('data-watch-sym'):null,title:document.title}})()`)
+    } else if (LAST_DWELL > 0 && i === total - 1) await sleep(LAST_DWELL)
+    else if (CADENCE) { await sleep(Math.max(0, keyAt + CADENCE - Date.now() - cadOverhead)); cadSleepEnd = Date.now() }
+    else await sleep(DWELL)
+    if (tracing) {
+      const T = globalThis.__traceSink
+      await run(`(()=>{if(window.__paintProbe)window.__paintProbe.marks=false;return true})()`)
+      const fin = new Promise((r) => { T.done = r })
+      await c.send('Tracing.end')
+      await Promise.race([fin, sleep(30000)])
+      T.on = false
+      writeFileSync(OUT.replace(/\.json$/, '') + `.flip${i}.trace.json`, JSON.stringify({ traceEvents: T.events }))
+      T.events = []
+    }
+    const got = await run(`(()=>{const F=window.__flip;const sel=document.querySelector('[data-watch-sym][aria-selected="true"],[data-watch-sym][data-selected="true"],[data-watch-sym][class*="listRowSelected"]');return {key:F.keys[0]||null,frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,end3:F.chart3?F.sigOf(F.chart3):null,sym:sel?sel.getAttribute('data-watch-sym'):null,title:document.title,...(F.take?F.take():{})}})()`)
     if (SOAK_EVERY) {
       // slim (a long soak's full res/dom/long would be rewritten on every save)
-      out.flips.push({ i, dir: K.key, before: before.sig, before2: before.sig2, before3: before.sig3, key: got.key, frames: got.frames, end: got.end, end2: got.end2, end3: got.end3, sym: got.sym })
+      out.flips.push({ i, dir: K.key, before: before.sig, before2: before.sig2, before3: before.sig3, key: got.key, frames: got.frames, end: got.end, end2: got.end2, end3: got.end3, sym: got.sym, paints: got.paints, evt: got.evt, busy: got.busy, busyFrom: got.busyFrom, busyEnd: got.busyEnd })
       if ((i + 1) % SOAK_EVERY === 0 || i === total - 1) await soakSample(i + 1)
     } else {
-      out.flips.push({ i, dir: K.key, before: before.sig, before2: before.sig2, before3: before.sig3, ...got })
+      out.flips.push({ i, dir: K.key, before: before.sig, before2: before.sig2, before3: before.sig3, ...got, ...(traceAlign != null ? { traceAlign } : {}) })
       save()
     }
   }
@@ -621,14 +727,14 @@ try {
   if (TFS.length) {
     const tfOut = { ...out, flips: [], tfSwitches: TFS }
     for (let i = 0; i < TFS.length; i++) {
-      const before = await run(`(()=>{const F=window.__flip;F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,sig3:F.chart3?F.sigOf(F.chart3):null,now:performance.now()}})()`)
+      const before = await run(`(()=>{const F=window.__flip;F.arm0&&F.arm0();F.frames.length=0;F.res.length=0;F.keys.length=0;F.dom.length=0;F.long.length=0;return {sig:F.sigOf(F.chart),sig2:F.chart2?F.sigOf(F.chart2):null,sig3:F.chart3?F.sigOf(F.chart3):null,now:performance.now()}})()`)
       const clicked = await run(`(()=>{const w=document.querySelector('[data-widget-id="flip-chart"]');const b=[...w.querySelectorAll('button')].find(x=>x.textContent.trim()===${JSON.stringify(TFS[i])});if(!b)return null;const t=performance.now();b.click();return t})()`, true)
       if (clicked == null) {
         const have = await run(`(()=>{const w=document.querySelector('[data-widget-id="flip-chart"]');return w?[...w.querySelectorAll('button')].map(x=>x.textContent.trim()).filter(t=>t&&t.length<=4).join(' '):'no chart widget'})()`)
         throw new Error(`no timeframe button labelled ${TFS[i]} in the chart's bar (short button labels there: ${have})`)
       }
       await sleep(DWELL)
-      const got = await run(`(()=>{const F=window.__flip;return {frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,end3:F.chart3?F.sigOf(F.chart3):null,title:document.title}})()`)
+      const got = await run(`(()=>{const F=window.__flip;return {frames:F.frames.slice(),res:F.res.slice(),dom:F.dom.slice(),long:F.long.slice(),end:F.sigOf(F.chart),end2:F.chart2?F.sigOf(F.chart2):null,end3:F.chart3?F.sigOf(F.chart3):null,title:document.title,...(F.take?F.take():{})}})()`)
       tfOut.flips.push({ i, dir: `tf ${TFS[i]}`, before: before.sig, key: clicked, ...got })
       writeFileSync(OUT.replace(/\.json$/, '') + '.tf.json', JSON.stringify(tfOut, null, 1))
     }
@@ -693,6 +799,8 @@ try {
       exitCode = 1
     }
   }
+  out.machine = machine.stop()
+  console.log(`machine: ${out.machine.cores} cores, system CPU median ${out.machine.cpuMedPct}% (p90 ${out.machine.cpuP90Pct}%), others ~${out.machine.othersCores} cores, free RAM min ${out.machine.freeMinMB} MB${out.machine.underLoad ? ' -- UNDER LOAD: ' + out.machine.why.join('; ') : ''}`)
   save()
   // --graceful-close: the browser quits on its own (and writes its pending localStorage) before the kill
   await app.close({ graceful: !!arg('graceful-close', '') })

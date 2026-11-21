@@ -7,8 +7,8 @@
 //   node scripts/proofs/acceptance-matrix.mjs [selection] [options]      measure what is not yet measured
 //   node scripts/proofs/acceptance-matrix.mjs --report [selection]       rewrite grid.md from what is recorded
 //   node scripts/proofs/acceptance-matrix.mjs --plan [selection]         list the cells and the time they take
-// selection: --grid=core (DEFAULT: the owner's core grid, 24 cells: D+60m and D+30m x S&P 500, Russell 2000,
-//   Bull & Bear ETFs x every motion, production's own device-store setting) | --grid=full (896 cells: every layout,
+// selection: --grid=core (DEFAULT: the owner's core grid, 42 cells: D+60m and D+30m x S&P 500, Russell 2000,
+//   Bull & Bear ETFs x every motion, production's own device-store setting) | --grid=full (1,568 cells: every layout,
 //   list and motion, store off and on); then any of --layouts=D+60m,W --lists=sp500 --motions=next,typed
 //   --stores=off,on,default replaces that dimension (ids: acceptance-matrix-lib.mjs LAYOUTS / LISTS / MOTIONS / STORES)
 // options: --out=<dir> (default D:/uct-history/acceptance/<--name, default today's date>)  --redo (measure again)
@@ -17,6 +17,9 @@
 //   --dist=<dir> --render-probe=1)  --user-list=<name> (the bench
 //   member's own list for the `user` row)  --screen-id=<n> (a saved screen for `screener`)  --typed-pool=<file>
 //   --board-busy=<marker file>  --dwell-next/--dwell-jump/--dwell-typed=ms  --warmup=ms  --set=base
+//   --compare=<baseline results.json, or its run folder>: every cell against the same cell of the baseline (the
+//   release rule: no cell worse beyond noise; acceptance-matrix-lib.mjs NOISE), into compare.md, with ONE verdict
+//   line (PASS / REGRESSION / INCONCLUSIVE) at the top of grid.md and in status.json
 // RESUMABLE: each cell writes cells/<id>.json (the raw run) and cells/<id>.score.json; a cell with a score is not
 // run again (unless --redo). EACH CELL is its own heavy_lock job (normal priority, never forced), so the machine's
 // other jobs interleave; inside an existing heavy-lock hold the cells run back to back instead. The bench board is
@@ -123,6 +126,17 @@ function report() {
   const results = cells.map((c) => readJson(scorePath(c.id))).filter(Boolean)
   const builds = [...new Set(results.map((r) => r.build && r.build.commit).filter(Boolean))]
   const lines = [M.formatGrid(results, cells, { name: OUT.split(/[\\/]/).pop(), builds, dist: opts.dist, renderProbe: opts.renderProbe })]
+  let compare = null
+  const basePath = arg('compare', '')
+  if (basePath) {
+    const file = existsSync(join(basePath, 'results.json')) ? join(basePath, 'results.json') : basePath
+    const baseline = readJson(file)
+    if (!Array.isArray(baseline)) throw new Error(`--compare: no results in ${file}`)
+    const wanted = new Set(cells.map((c) => c.id))
+    compare = M.compareResults(results, baseline.filter((r) => wanted.has(r.id)))
+    writeFileSync(join(OUT, 'compare.md'), M.formatCompare(compare, { current: OUT, baseline: file }))
+    lines.unshift(`**${compare.line}** (compare.md)`, '')
+  }
   const worst = M.worstSwitches(results, 10)
   if (worst.length) {
     lines.push('## The worst switches', '')
@@ -140,7 +154,8 @@ function report() {
   // status.json: what a scheduler reads (is this pass complete, and how did it go)
   const verdicts = {}
   for (const r of results) verdicts[r.verdict] = (verdicts[r.verdict] || 0) + 1
-  writeFileSync(join(OUT, 'status.json'), JSON.stringify({ grid: GRID, cells: cells.length, scored: results.length, todo: cells.length - results.length, verdicts, builds, updated: new Date().toISOString() }, null, 1))
+  writeFileSync(join(OUT, 'status.json'), JSON.stringify({ grid: GRID, cells: cells.length, scored: results.length, todo: cells.length - results.length, verdicts, builds, ...(compare ? { compare: { verdict: compare.verdict, line: compare.line } } : {}), updated: new Date().toISOString() }, null, 1))
+  if (compare) console.log(compare.line)
   return join(OUT, 'grid.md')
 }
 

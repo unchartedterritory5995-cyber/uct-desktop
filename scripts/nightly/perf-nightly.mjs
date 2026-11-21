@@ -13,9 +13,9 @@
 //      over-the-limit speed is measured again, and a regression is posted here, first night then every 7th.
 //      UCT_NIGHTLY_CHARTS=0 skips it; UCT_CANARY_BOARD_BUSY=<file> names a bench-board marker to honour.
 //   6. Then the chart ACCEPTANCE MATRIX (scripts/proofs/acceptance-matrix.mjs, coordinator 2026-11-21), cells
-//      back to back inside this lock. Weeknights: the owner's CORE grid (24 cells, production's own device-store
-//      setting) into D:/uct-history/acceptance/core-<date>/, at most 90 min (UCT_MATRIX_CORE_MIN). Saturday and
-//      Sunday nights: the FULL 896-cell matrix in resumable slices (UCT_MATRIX_WEEKEND_MIN, default 360) into one
+//      back to back inside this lock. Weeknights: the owner's CORE grid (42 cells, production's own device-store
+//      setting) into D:/uct-history/acceptance/core-<date>/, at most 120 min (UCT_MATRIX_CORE_MIN). Saturday and
+//      Sunday nights: the FULL 1,568-cell matrix in resumable slices (UCT_MATRIX_WEEKEND_MIN, default 360) into one
 //      pass folder (acceptance/full-pass.json names it) until every cell is scored, then a new pass starts.
 //      UCT_NIGHTLY_MATRIX=0 skips it; UCT_MATRIX_PROBE_DIST=<dir> measures a render-probe build instead.
 // Everything lands in proof-output/nightly/ (history.jsonl, one JSON per night, log.txt).
