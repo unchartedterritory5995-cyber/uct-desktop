@@ -56,12 +56,24 @@ export const MOTIONS = {
 }
 // `default`: no override, so a fresh profile runs whatever production defaults to (the nightly core grid)
 export const STORES = { off: ['--ls=uct.deviceStore=0'], on: ['--ls=uct.deviceStore=1', '--wait-device=1'], default: [] }
-/** Named selections. CORE = the owner's core grid (coordinator 2026-11-21), the nightly default: 42 cells (7 motions incl. the 300 / 150 ms cadences and a held key).
+/** Named selections. CORE = the owner's core grid (coordinator 2026-11-21): 24 cells, the promotion gate and the
+ * nightly default (with CADENCE, 18 cells: the 300 / 150 ms taps and a held key). PR = the 8-cell owner subset.
  * FULL = every layout, list and motion, device store off and on: 1,568 cells, weekends in resumable slices. */
 export const GRIDS = {
-  core: { layouts: ['D+60m', 'D+30m'], lists: ['sp500', 'r2000', 'bullbear'], motions: ['next', 'next300', 'next150', 'held', 'jump12', 'jump70', 'typed'], stores: ['default'] },
+  core: { layouts: ['D+60m', 'D+30m'], lists: ['sp500', 'r2000', 'bullbear'], motions: ['next', 'jump12', 'jump70', 'typed'], stores: ['default'] },
+  // the scanning cadences on the same layouts and lists (run nightly after the core grid)
+  cadence: { layouts: ['D+60m', 'D+30m'], lists: ['sp500', 'r2000', 'bullbear'], motions: ['next300', 'next150', 'held'], stores: ['default'] },
+  // the 8-cell owner subset every chart PR runs against the baseline (its author, with --compare)
+  pr: { layouts: ['D+30m'], lists: ['sp500', 'r2000'], motions: ['next', 'jump12', 'jump70', 'typed'], stores: ['default'] },
   full: { stores: ['off', 'on'] },
 }
+/** The cells of one or more grids (a comma list: their union, in matrix order), each narrowed the same way. */
+export function gridCells(grids, f = {}) {
+  const want = new Set()
+  for (const g of String(grids).split(',').map((x) => x.trim()).filter(Boolean)) for (const c of expandCells(selection(g, f))) want.add(c.id)
+  return expandCells({}).filter((c) => want.has(c.id))
+}
+
 /** A grid's selection; an explicit filter replaces that dimension of the grid. */
 export function selection(grid, f = {}) {
   const g = GRIDS[grid]
